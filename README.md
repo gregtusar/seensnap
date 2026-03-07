@@ -19,7 +19,7 @@ Monorepo for the SeenSnap Phase 1 MVP.
 3. Copy `apps/api/.env.example` to `apps/api/.env`.
 4. Set `DATABASE_URL`.
 5. Run migrations with `alembic upgrade head` from `apps/api`.
-6. Start the API with `uvicorn app.main:app --reload`.
+6. Start the API with `./scripts/run-api-local.sh`.
 
 ### Mobile
 
