@@ -1,0 +1,8 @@
+project_id         = "seensnap"
+project_name       = "seensnap"
+region             = "us-central1"
+upload_bucket_name = "seensnap-uploads-dev"
+db_instance_name   = "seensnap-pg-dev"
+db_name            = "seensnap"
+db_user_name       = "seensnap_app"
+db_tier            = "db-custom-1-3840"

@@ -1,0 +1,30 @@
+{
+  "expo": {
+    "name": "SeenSnap",
+    "slug": "seensnap",
+    "scheme": "seensnap",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "icon": "../../assets/branding/seensnap-logo.png",
+    "splash": {
+      "image": "../../assets/branding/seensnap-logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#f5efe4"
+    },
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "ios": {
+      "bundleIdentifier": "com.seensnap.app"
+    },
+    "android": {
+      "package": "com.seensnap.app",
+      "adaptiveIcon": {
+        "foregroundImage": "../../assets/branding/seensnap-logo.png",
+        "backgroundColor": "#f5efe4"
+      }
+    }
+  }
+}
