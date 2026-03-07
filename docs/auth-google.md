@@ -30,10 +30,15 @@ Mobile:
 - `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID`
 - `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`
 
+## Current local client setup
+
+- Web client ID configured
+- iOS client ID configured
+- Android client ID still pending because the SHA-1 fingerprint has not been set up yet
+
 ## Remaining work after credentials exist
 
 - create platform OAuth client IDs in the `seensnap` project
 - add token refresh and session restore UX refinement
 - protect all authenticated endpoints with the bearer token dependency
 - add Apple auth using the same local session issuance path
-
