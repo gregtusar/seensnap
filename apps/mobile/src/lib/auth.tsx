@@ -9,7 +9,6 @@ import { apiRequest } from "@/lib/api";
 WebBrowser.maybeCompleteAuthSession();
 
 const SESSION_TOKEN_KEY = "session_token";
-const PROJECT_NAME_FOR_PROXY = "@gregtusar/seensnap";
 const EXPO_PROXY_REDIRECT_URI = "https://auth.expo.io/@gregtusar/seensnap";
 
 type SessionUser = {
@@ -29,7 +28,9 @@ type AuthContextValue = {
   isLoading: boolean;
   sessionToken: string | null;
   user: SessionUser | null;
+  isExpoGo: boolean;
   signInWithGoogle: () => Promise<void>;
+  signInDemo: () => Promise<void>;
   signOut: () => Promise<void>;
 };
 
@@ -49,7 +50,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     iosClientId: isExpoGo ? undefined : iosClientId,
     androidClientId: isExpoGo ? undefined : androidClientId,
     webClientId: webClientId,
-  }, isExpoGo ? { useProxy: true, projectNameForProxy: PROJECT_NAME_FOR_PROXY } : {});
+  });
 
   useEffect(() => {
     async function loadSession() {
@@ -88,12 +89,23 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const signInWithGoogle = async () => {
     setIsLoading(true);
     try {
-      await promptAsync(
-        isExpoGo ? { useProxy: true, projectNameForProxy: PROJECT_NAME_FOR_PROXY } : undefined
-      );
+      await promptAsync();
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const signInDemo = async () => {
+    const demoUser = {
+      user_id: "00000000-0000-0000-0000-000000000001",
+      email: "demo@seensnap.app",
+      display_name: "SeenSnap Demo",
+      avatar_url: null,
+    };
+    const demoToken = "expo-go-demo-session";
+    await SecureStore.setItemAsync(SESSION_TOKEN_KEY, demoToken);
+    setSessionToken(demoToken);
+    setUser(demoUser);
   };
 
   const signOut = async () => {
@@ -108,7 +120,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
         isLoading: isLoading || !request,
         sessionToken,
         user,
+        isExpoGo,
         signInWithGoogle,
+        signInDemo,
         signOut,
       }}
     >

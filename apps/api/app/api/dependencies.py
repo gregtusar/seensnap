@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.core.security import decode_access_token
 from app.db.session import SessionLocal
 from app.models.user import User
+from app.services.demo import DEMO_TOKEN, ensure_demo_user
 
 
 def get_db() -> Generator:
@@ -31,6 +32,9 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
 
     token = authorization.removeprefix("Bearer ").strip()
+    if token == DEMO_TOKEN:
+        return ensure_demo_user(db)
+
     try:
         payload = decode_access_token(token)
     except jwt.InvalidTokenError as exc:

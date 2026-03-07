@@ -6,12 +6,12 @@
     "scheme": "seensnap",
     "version": "0.1.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
     "icon": "./assets/branding/seensnap-logo.png",
     "splash": {
       "image": "./assets/branding/seensnap-logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#f5efe4"
+      "backgroundColor": "#0b1424"
     },
     "plugins": ["expo-router"],
     "experiments": {
@@ -24,7 +24,7 @@
       "package": "com.seensnap.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/branding/seensnap-logo.png",
-        "backgroundColor": "#f5efe4"
+        "backgroundColor": "#0b1424"
       }
     }
   }

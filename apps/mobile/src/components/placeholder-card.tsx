@@ -1,7 +1,7 @@
 import { ReactNode } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
-import { colors } from "@/constants/theme";
+import { colors, radii, spacing } from "@/constants/theme";
 
 type PlaceholderCardProps = {
   eyebrow: string;
@@ -23,23 +23,27 @@ export function PlaceholderCard({ eyebrow, title, body, footer }: PlaceholderCar
 
 const styles = StyleSheet.create({
   card: {
-    padding: 18,
-    borderRadius: 20,
+    padding: spacing.lg,
+    borderRadius: radii.md,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
-    gap: 8,
+    gap: spacing.xs,
+    shadowColor: colors.shadow,
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 10 },
   },
   eyebrow: {
     fontSize: 12,
-    fontWeight: "700",
-    letterSpacing: 1,
+    fontWeight: "800",
+    letterSpacing: 1.4,
     textTransform: "uppercase",
     color: colors.accent,
   },
   title: {
     fontSize: 20,
-    fontWeight: "700",
+    fontWeight: "800",
     color: colors.ink,
   },
   body: {
@@ -51,4 +55,3 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
 });
-
