@@ -2,13 +2,14 @@
   "expo": {
     "name": "SeenSnap",
     "slug": "seensnap",
+    "owner": "gregtusar",
     "scheme": "seensnap",
     "version": "0.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "icon": "../../assets/branding/seensnap-logo.png",
+    "icon": "./assets/branding/seensnap-logo.png",
     "splash": {
-      "image": "../../assets/branding/seensnap-logo.png",
+      "image": "./assets/branding/seensnap-logo.png",
       "resizeMode": "contain",
       "backgroundColor": "#f5efe4"
     },
@@ -22,7 +23,7 @@
     "android": {
       "package": "com.seensnap.app",
       "adaptiveIcon": {
-        "foregroundImage": "../../assets/branding/seensnap-logo.png",
+        "foregroundImage": "./assets/branding/seensnap-logo.png",
         "backgroundColor": "#f5efe4"
       }
     }

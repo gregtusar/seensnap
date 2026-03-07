@@ -1,3 +1,4 @@
+import Constants from "expo-constants";
 import * as SecureStore from "expo-secure-store";
 import * as WebBrowser from "expo-web-browser";
 import { useIdTokenAuthRequest } from "expo-auth-session/providers/google";
@@ -8,6 +9,8 @@ import { apiRequest } from "@/lib/api";
 WebBrowser.maybeCompleteAuthSession();
 
 const SESSION_TOKEN_KEY = "session_token";
+const PROJECT_NAME_FOR_PROXY = "@gregtusar/seensnap";
+const EXPO_PROXY_REDIRECT_URI = "https://auth.expo.io/@gregtusar/seensnap";
 
 type SessionUser = {
   user_id: string;
@@ -36,11 +39,17 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [isLoading, setIsLoading] = useState(true);
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [user, setUser] = useState<SessionUser | null>(null);
+  const isExpoGo = Constants.appOwnership === "expo";
+  const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+  const iosClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
+  const androidClientId = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID;
   const [request, response, promptAsync] = useIdTokenAuthRequest({
-    iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
-    androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
-    webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
-  });
+    clientId: isExpoGo ? webClientId : undefined,
+    redirectUri: isExpoGo ? EXPO_PROXY_REDIRECT_URI : undefined,
+    iosClientId: isExpoGo ? undefined : iosClientId,
+    androidClientId: isExpoGo ? undefined : androidClientId,
+    webClientId: webClientId,
+  }, isExpoGo ? { useProxy: true, projectNameForProxy: PROJECT_NAME_FOR_PROXY } : {});
 
   useEffect(() => {
     async function loadSession() {
@@ -79,7 +88,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const signInWithGoogle = async () => {
     setIsLoading(true);
     try {
-      await promptAsync();
+      await promptAsync(
+        isExpoGo ? { useProxy: true, projectNameForProxy: PROJECT_NAME_FOR_PROXY } : undefined
+      );
     } finally {
       setIsLoading(false);
     }

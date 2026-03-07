@@ -14,7 +14,7 @@ export default function SignInScreen() {
     >
       <View style={styles.panel}>
         <Image
-          source={require("../../../assets/branding/seensnap-logo.png")}
+          source={require("../assets/branding/seensnap-logo.png")}
           style={styles.logo}
           resizeMode="contain"
         />
