@@ -128,6 +128,7 @@ def comment_on_feed_event(
         avatar_url=profile.avatar_url if profile else None,
         body=comment.body,
         parent_comment_id=comment.parent_comment_id,
+        can_delete=comment.user_id == current_user.id,
         created_at=comment.created_at,
     )
 
@@ -165,6 +166,7 @@ def reply_to_feed_comment(
         avatar_url=profile.avatar_url if profile else None,
         body=comment.body,
         parent_comment_id=comment.parent_comment_id,
+        can_delete=comment.user_id == current_user.id,
         created_at=comment.created_at,
     )
 
@@ -192,6 +194,7 @@ def get_feed_comments(event_id: UUID, current_user: CurrentUser, db: DbSession) 
             avatar_url=profiles.get(comment.user_id).avatar_url if profiles.get(comment.user_id) else None,
             body=comment.body,
             parent_comment_id=comment.parent_comment_id,
+            can_delete=comment.user_id == current_user.id,
             created_at=comment.created_at,
         )
         for comment in comments
@@ -246,6 +249,7 @@ def _feed_response(events: list[FeedEvent], db: DbSession, viewer_user_id: UUID)
             reaction_counts=dict(reaction_counts.get(event.id, {})),
             comment_count=comment_counts.get(event.id, 0),
             my_reaction=my_reactions.get(event.id),
+            can_delete=event.actor_user_id == viewer_user_id,
             created_at=event.created_at,
         )
         for event in events

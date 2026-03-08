@@ -17,10 +17,34 @@ class WatchlistItemResponse(BaseModel):
 class WatchlistResponse(BaseModel):
     id: UUID
     name: str
+    description: str | None = None
+    is_default: bool = False
+    is_system_list: bool = False
     items: list[WatchlistItemResponse]
 
 
 class WatchlistAddRequest(BaseModel):
     content_title_id: UUID
+    list_id: UUID | None = None
     added_via: str = Field(default="manual", min_length=1, max_length=32)
 
+
+class WatchlistListCreateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    description: str | None = Field(default=None, max_length=280)
+
+
+class WatchlistListUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=120)
+    description: str | None = Field(default=None, max_length=280)
+
+
+class WatchlistListSummaryResponse(BaseModel):
+    id: UUID
+    name: str
+    description: str | None = None
+    is_default: bool = False
+    is_system_list: bool = False
+    title_count: int
+    updated_at: datetime | None = None
+    preview_posters: list[str] = Field(default_factory=list)

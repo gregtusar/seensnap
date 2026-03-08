@@ -21,6 +21,7 @@ import {
 
 import { colors, radii, spacing } from "@/constants/theme";
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
+import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -71,6 +72,7 @@ type FeedEvent = {
   reaction_counts: Record<string, number>;
   comment_count: number;
   my_reaction?: string | null;
+  can_delete?: boolean;
   created_at: string;
 };
 
@@ -82,16 +84,8 @@ type FeedComment = {
   avatar_url?: string | null;
   body: string;
   parent_comment_id?: string | null;
+  can_delete?: boolean;
   created_at: string;
-};
-
-type WatchlistResponse = {
-  id: string;
-  name: string;
-  items: Array<{
-    id: string;
-    content_title_id: string;
-  }>;
 };
 
 const reactionOptions: Array<{ key: ReactionKey; icon: string; label: string }> = [
@@ -117,6 +111,7 @@ export default function FeedScreen() {
   const [detailTitle, setDetailTitle] = useState<UniversalTitle | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const [showSaveSheet, setShowSaveSheet] = useState(false);
   const [savedTitleIds, setSavedTitleIds] = useState<Set<string>>(new Set());
 
   const [attachedTitle, setAttachedTitle] = useState<Title | null>(null);
@@ -211,8 +206,8 @@ export default function FeedScreen() {
         return;
       }
       try {
-        const watchlist = await apiRequest<WatchlistResponse>("/me/watchlist", { token: sessionToken });
-        setSavedTitleIds(new Set(watchlist.items.map((item) => item.content_title_id)));
+        const titleIds = await apiRequest<string[]>("/me/watchlist/title-ids", { token: sessionToken });
+        setSavedTitleIds(new Set(titleIds));
       } catch {
         setSavedTitleIds(new Set());
       }
@@ -445,23 +440,6 @@ export default function FeedScreen() {
     }
   }
 
-  async function saveToMyPicks(item: FeedEvent | null) {
-    if (!sessionToken || !item?.title?.id) {
-      return;
-    }
-    try {
-      const watchlist = await apiRequest<WatchlistResponse>("/me/watchlist/items", {
-        method: "POST",
-        token: sessionToken,
-        body: JSON.stringify({ content_title_id: item.title.id, added_via: "feed_detail" }),
-      });
-      setSavedTitleIds(new Set(watchlist.items.map((entry) => entry.content_title_id)));
-      setToast("Saved to My Picks");
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Save failed");
-    }
-  }
-
   function toggleFollow(actorUserId: string) {
     setFollowByActor((current) => ({ ...current, [actorUserId]: !current[actorUserId] }));
   }
@@ -588,7 +566,6 @@ export default function FeedScreen() {
                 onOpenDetails={() => void openDetails(item)}
                 onOpenComposer={() => openComposer(item, "card")}
                 onCta={(label) => onCta(item, label)}
-                currentUserId={user?.user_id ?? null}
                 currentUserAvatar={user?.avatar_url ?? null}
                 onDeletePost={() => {
                   Alert.alert("Delete this post?", "This can’t be undone.", [
@@ -615,7 +592,7 @@ export default function FeedScreen() {
         title={detailTitle}
         isSaved={Boolean(detailSource?.title?.id && savedTitleIds.has(detailSource.title.id))}
         onClose={() => setShowDetails(false)}
-        onSave={() => void saveToMyPicks(detailSource)}
+        onSave={() => setShowSaveSheet(true)}
         onPost={() => openComposer(detailSource, "card")}
         onAddToTeam={() =>
           openAddToTeam(
@@ -722,6 +699,21 @@ export default function FeedScreen() {
         onError={(message) => setError(message)}
       />
 
+      <SaveToListSheet
+        visible={showSaveSheet}
+        token={sessionToken}
+        titleId={detailSource?.title?.id ?? null}
+        source="social_feed"
+        onClose={() => setShowSaveSheet(false)}
+        onSaved={(listName, alreadySaved) => {
+          if (detailSource?.title?.id) {
+            setSavedTitleIds((current) => new Set(current).add(detailSource.title!.id));
+          }
+          setToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`);
+        }}
+        onError={(message) => setError(message)}
+      />
+
       {toast ? (
         <View style={styles.toast}>
           <Text style={styles.toastText}>{toast}</Text>
@@ -746,7 +738,6 @@ function FeedCard({
   onOpenDetails,
   onOpenComposer,
   onCta,
-  currentUserId,
   currentUserAvatar,
   onDeletePost,
   onDeleteComment,
@@ -765,7 +756,6 @@ function FeedCard({
   onOpenDetails: () => void;
   onOpenComposer: () => void;
   onCta: (label: string) => void;
-  currentUserId: string | null;
   currentUserAvatar: string | null;
   onDeletePost: () => void;
   onDeleteComment: (comment: FeedComment) => void;
@@ -777,7 +767,7 @@ function FeedCard({
     (typeof item.payload.caption === "string" ? item.payload.caption : null) ??
     (typeof item.payload.body === "string" ? item.payload.body : null);
   const ratingValue = typeof item.payload.rating === "number" ? item.payload.rating : null;
-  const isOwnPost = Boolean(currentUserId && item.actor.user_id === currentUserId);
+  const isOwnPost = Boolean(item.can_delete);
 
   const topLevel = useMemo(() => comments.filter((comment) => !comment.parent_comment_id), [comments]);
   const visibleTop = expanded ? topLevel : topLevel.slice(0, 2);
@@ -888,7 +878,7 @@ function FeedCard({
           <View key={comment.id} style={styles.commentRowWrap}>
             <CommentRow
               comment={comment}
-              isOwnComment={Boolean(currentUserId && comment.user_id === currentUserId)}
+              isOwnComment={Boolean(comment.can_delete)}
               onDelete={() => onDeleteComment(comment)}
             />
             {(byParent[comment.id] ?? []).slice(0, expanded ? 5 : 1).map((reply) => (
@@ -896,7 +886,7 @@ function FeedCard({
                 <CommentRow
                   comment={reply}
                   compact
-                  isOwnComment={Boolean(currentUserId && reply.user_id === currentUserId)}
+                  isOwnComment={Boolean(reply.can_delete)}
                   onDelete={() => onDeleteComment(reply)}
                 />
               </View>

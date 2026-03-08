@@ -8,12 +8,14 @@ from app.models.social import Watchlist
 from app.models.user import AuthIdentity, User, UserPreferences, UserProfile
 from app.schemas.auth import DevAuthRequest, GoogleAuthRequest, SessionResponse, SessionUserResponse
 from app.services.auth import GoogleAuthError, authenticate_with_google
+from app.services.watchlists import ensure_default_watchlists
 
 router = APIRouter()
 
 
 @router.get("/me", response_model=SessionUserResponse, status_code=status.HTTP_200_OK)
 def get_session_user(current_user: CurrentUser, db: DbSession) -> SessionUserResponse:
+    ensure_default_watchlists(db, current_user.id)
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == current_user.id))
     return SessionUserResponse(
         user_id=current_user.id,
@@ -79,13 +81,12 @@ def dev_auth(payload: DevAuthRequest) -> SessionResponse:
         if preferences is None:
             db.add(UserPreferences(user_id=user.id))
 
-        watchlist = db.scalar(
-            select(Watchlist).where(Watchlist.owner_user_id == user.id, Watchlist.is_default.is_(True))
-        )
+        watchlist = db.scalar(select(Watchlist).where(Watchlist.owner_user_id == user.id, Watchlist.is_default.is_(True)))
         if watchlist is None:
-            db.add(Watchlist(owner_user_id=user.id, name="My Picks", is_default=True))
+            db.add(Watchlist(owner_user_id=user.id, name="My Picks", description="Your master saved list.", is_default=True, is_system_list=True))
 
         db.commit()
+        ensure_default_watchlists(db, user.id)
 
         return SessionResponse(
             access_token=create_access_token(user.id, user.email, "dev"),

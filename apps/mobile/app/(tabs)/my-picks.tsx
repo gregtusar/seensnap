@@ -1,6 +1,17 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useCallback, useState } from "react";
-import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useMemo, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 
 import { Screen } from "@/components/screen";
@@ -9,6 +20,17 @@ import { colors, radii, spacing } from "@/constants/theme";
 import { useAuth } from "@/lib/auth";
 import { apiRequest } from "@/lib/api";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
+
+type WatchlistSummary = {
+  id: string;
+  name: string;
+  description?: string | null;
+  is_default: boolean;
+  is_system_list: boolean;
+  title_count: number;
+  updated_at?: string | null;
+  preview_posters: string[];
+};
 
 type WatchlistItem = {
   id: string;
@@ -21,114 +43,156 @@ type WatchlistItem = {
     content_type: string;
     overview?: string | null;
     poster_url?: string | null;
-    genres: string[];
+    release_date?: string | null;
   };
 };
 
 type WatchlistResponse = {
   id: string;
   name: string;
+  description?: string | null;
+  is_default: boolean;
+  is_system_list: boolean;
   items: WatchlistItem[];
-};
-
-type TeamSummary = {
-  id: string;
-  name: string;
-  owner_user_id: string;
-  invite_code: string;
-  max_members: number;
-  member_count: number;
 };
 
 export default function MyPicksScreen() {
   const { sessionToken } = useAuth();
-  const [watchlist, setWatchlist] = useState<WatchlistResponse | null>(null);
-  const [teams, setTeams] = useState<TeamSummary[]>([]);
-  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
-  const [sharedByItemId, setSharedByItemId] = useState<Record<string, string>>({});
+  const [lists, setLists] = useState<WatchlistSummary[]>([]);
+  const [selectedListId, setSelectedListId] = useState<string | null>(null);
+  const [selectedList, setSelectedList] = useState<WatchlistResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const [showCreate, setShowCreate] = useState(false);
+  const [showRename, setShowRename] = useState(false);
+  const [listName, setListName] = useState("");
+  const [listDescription, setListDescription] = useState("");
+
   const [showDetails, setShowDetails] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailTitle, setDetailTitle] = useState<UniversalTitle | null>(null);
 
-  const selectedTeam = teams.find((team) => team.id === selectedTeamId) ?? teams[0] ?? null;
+  const totals = useMemo(() => {
+    const totalTitles = lists.reduce((acc, item) => acc + item.title_count, 0);
+    return {
+      totalTitles,
+      listCount: lists.length,
+    };
+  }, [lists]);
 
-  const loadData = useCallback(async () => {
-    if (!sessionToken) {
-      return;
+  const loadLists = useCallback(async () => {
+    if (!sessionToken) return;
+    const summaries = await apiRequest<WatchlistSummary[]>("/me/watchlist/lists", { token: sessionToken });
+    setLists(summaries);
+    const nextSelected = selectedListId && summaries.some((item) => item.id === selectedListId) ? selectedListId : summaries[0]?.id ?? null;
+    setSelectedListId(nextSelected);
+    if (nextSelected) {
+      const detail = await apiRequest<WatchlistResponse>(`/me/watchlist/lists/${nextSelected}`, { token: sessionToken });
+      setSelectedList(detail);
+    } else {
+      setSelectedList(null);
     }
-    setIsLoading(true);
-    setError(null);
-    try {
-      const [watchlistData, teamData] = await Promise.all([
-        apiRequest<WatchlistResponse>("/me/watchlist", { token: sessionToken }),
-        apiRequest<TeamSummary[]>("/teams", { token: sessionToken }),
-      ]);
-      setWatchlist(watchlistData);
-      setTeams(teamData);
-      setSelectedTeamId((current) => {
-        if (current && teamData.some((team) => team.id === current)) {
-          return current;
-        }
-        return teamData[0]?.id ?? null;
-      });
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Failed to load My Picks");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [sessionToken]);
+  }, [selectedListId, sessionToken]);
 
   useFocusEffect(
     useCallback(() => {
-      void loadData();
-    }, [loadData])
+      async function load() {
+        if (!sessionToken) return;
+        setIsLoading(true);
+        setError(null);
+        try {
+          await loadLists();
+        } catch (loadError) {
+          setError(loadError instanceof Error ? loadError.message : "Failed to load My Picks");
+        } finally {
+          setIsLoading(false);
+        }
+      }
+      void load();
+    }, [loadLists, sessionToken])
   );
 
-  async function removeItem(itemId: string) {
-    if (!sessionToken) {
-      return;
-    }
+  async function openList(listId: string) {
+    if (!sessionToken) return;
+    setSelectedListId(listId);
     try {
-      const updated = await apiRequest<WatchlistResponse>(`/me/watchlist/items/${itemId}`, {
-        method: "DELETE",
-        token: sessionToken,
-      });
-      setWatchlist(updated);
-      setSharedByItemId((current) => {
-        const next = { ...current };
-        delete next[itemId];
-        return next;
-      });
-    } catch (watchlistError) {
-      setError(watchlistError instanceof Error ? watchlistError.message : "Failed to remove item");
+      const detail = await apiRequest<WatchlistResponse>(`/me/watchlist/lists/${listId}`, { token: sessionToken });
+      setSelectedList(detail);
+    } catch (listError) {
+      setError(listError instanceof Error ? listError.message : "Failed to load list");
     }
   }
 
-  async function shareItem(item: WatchlistItem) {
-    if (!sessionToken || !selectedTeam) {
-      setError("Join or create a team before sharing");
-      return;
-    }
-
+  async function createList() {
+    if (!sessionToken || !listName.trim()) return;
     try {
-      await apiRequest(`/shares/teams/${selectedTeam.id}`, {
+      const created = await apiRequest<WatchlistResponse>("/me/watchlist/lists", {
         method: "POST",
         token: sessionToken,
-        body: JSON.stringify({ content_title_id: item.content_title_id }),
+        body: JSON.stringify({ name: listName.trim(), description: listDescription.trim() || null }),
       });
-      setSharedByItemId((current) => ({ ...current, [item.id]: selectedTeam.id }));
-      setError(null);
-    } catch (shareError) {
-      setError(shareError instanceof Error ? shareError.message : "Failed to share title");
+      setShowCreate(false);
+      setListName("");
+      setListDescription("");
+      setToast(`Created ${created.name}`);
+      await loadLists();
+      setSelectedListId(created.id);
+      setSelectedList(created);
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "Failed to create list");
+    }
+  }
+
+  async function renameList() {
+    if (!sessionToken || !selectedList || !listName.trim()) return;
+    try {
+      const updated = await apiRequest<WatchlistResponse>(`/me/watchlist/lists/${selectedList.id}`, {
+        method: "PATCH",
+        token: sessionToken,
+        body: JSON.stringify({ name: listName.trim(), description: listDescription.trim() || null }),
+      });
+      setShowRename(false);
+      setToast(`Updated ${updated.name}`);
+      await loadLists();
+      setSelectedList(updated);
+    } catch (renameError) {
+      setError(renameError instanceof Error ? renameError.message : "Failed to update list");
+    }
+  }
+
+  async function deleteList() {
+    if (!sessionToken || !selectedList || selectedList.is_default) return;
+    try {
+      await apiRequest<void>(`/me/watchlist/lists/${selectedList.id}`, {
+        method: "DELETE",
+        token: sessionToken,
+      });
+      setToast("List deleted");
+      await loadLists();
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Failed to delete list");
+    }
+  }
+
+  async function removeFromList(item: WatchlistItem) {
+    if (!sessionToken || !selectedList) return;
+    try {
+      const updated = await apiRequest<WatchlistResponse>(
+        `/me/watchlist/lists/${selectedList.id}/titles/${item.content_title_id}`,
+        { method: "DELETE", token: sessionToken }
+      );
+      setSelectedList(updated);
+      await loadLists();
+      setToast(`Removed from ${selectedList.name}`);
+    } catch (removeError) {
+      setError(removeError instanceof Error ? removeError.message : "Failed to remove title");
     }
   }
 
   async function openDetails(item: WatchlistItem) {
-    if (!sessionToken) {
-      return;
-    }
+    if (!sessionToken) return;
     setShowDetails(true);
     setDetailLoading(true);
     try {
@@ -143,320 +207,230 @@ export default function MyPicksScreen() {
   }
 
   return (
-    <Screen
-      title="My Picks"
-      subtitle="Save titles for yourself, then explicitly push the best ones into one of your watch teams."
-    >
-      <ScrollView contentContainerStyle={styles.list}>
-        <View style={styles.summaryCard}>
-          <View>
-            <Text style={styles.summaryEyebrow}>Watch Team Top 10</Text>
-            <Text style={styles.summaryTitle}>{watchlist?.items.length ?? 0} titles in rotation</Text>
-          </View>
-          <View style={styles.summaryScore}>
-            <Text style={styles.summaryScoreValue}>{Math.min((watchlist?.items.length ?? 0) + 7, 10)}.0</Text>
-          </View>
+    <Screen title="My Picks" subtitle="Your saved titles, organized by mood, moment, or obsession.">
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.summary}>
+          <Text style={styles.summaryText}>{totals.totalTitles} saved • {totals.listCount} lists</Text>
+          <Text style={styles.summarySub}>Updated today</Text>
         </View>
 
-        <View style={styles.shareCard}>
-          <View style={styles.shareHeader}>
-            <Text style={styles.shareTitle}>Share target</Text>
-            <Text style={styles.shareMeta}>
-              {selectedTeam ? `${selectedTeam.member_count}/${selectedTeam.max_members} members` : "No team selected"}
-            </Text>
-          </View>
-          {teams.length === 0 ? (
-            <Text style={styles.shareEmpty}>Create or join a team from the Teams tab to share picks into the feed.</Text>
-          ) : (
-            <View style={styles.teamChipRow}>
-              {teams.map((team) => (
+        <View style={styles.headerRow}>
+          <Text style={styles.sectionTitle}>Lists</Text>
+          <Pressable style={styles.createButton} onPress={() => {
+            setListName("");
+            setListDescription("");
+            setShowCreate(true);
+          }}>
+            <Text style={styles.createButtonText}>Create New List</Text>
+          </Pressable>
+        </View>
+
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.listRow}>
+          {lists.map((list) => (
+            <Pressable
+              key={list.id}
+              style={[styles.listCard, selectedListId === list.id && styles.listCardActive]}
+              onPress={() => void openList(list.id)}
+            >
+              <Text style={styles.listName}>{list.name}</Text>
+              <Text style={styles.listMeta}>{list.title_count} titles</Text>
+              {list.description ? <Text style={styles.listDesc} numberOfLines={2}>{list.description}</Text> : null}
+              <View style={styles.previewRow}>
+                {list.preview_posters.slice(0, 4).map((poster, idx) => (
+                  <Image key={poster + idx} source={{ uri: poster }} style={styles.previewPoster} />
+                ))}
+              </View>
+            </Pressable>
+          ))}
+        </ScrollView>
+
+        <View style={styles.headerRow}>
+          <Text style={styles.sectionTitle}>{selectedList?.name ?? "Select a list"}</Text>
+          {selectedList ? (
+            <View style={styles.actionsRow}>
+              <Pressable
+                style={styles.iconButton}
+                onPress={() => {
+                  setListName(selectedList.name);
+                  setListDescription(selectedList.description || "");
+                  setShowRename(true);
+                }}
+              >
+                <Ionicons name="create-outline" color={colors.ink} size={16} />
+              </Pressable>
+              {!selectedList.is_default ? (
                 <Pressable
-                  key={team.id}
-                  onPress={() => setSelectedTeamId(team.id)}
-                  style={[styles.teamChip, selectedTeam?.id === team.id && styles.teamChipSelected]}
+                  style={styles.iconButton}
+                  onPress={() =>
+                    Alert.alert(
+                      "Delete this list?",
+                      "Titles will only be removed from this list, not from your other saved lists.",
+                      [
+                        { text: "Cancel", style: "cancel" },
+                        { text: "Delete", style: "destructive", onPress: () => void deleteList() },
+                      ]
+                    )
+                  }
                 >
-                  <Text style={[styles.teamChipLabel, selectedTeam?.id === team.id && styles.teamChipLabelSelected]}>
-                    {team.name}
-                  </Text>
+                  <Ionicons name="trash-outline" color={colors.danger} size={16} />
                 </Pressable>
-              ))}
+              ) : null}
             </View>
-          )}
+          ) : null}
         </View>
 
         {isLoading ? <ActivityIndicator color={colors.accent} /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
-        {!isLoading && watchlist?.items.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>Nothing saved yet</Text>
-            <Text style={styles.emptyBody}>Search from the Home tab and add a few titles to build out My Picks.</Text>
+        {!isLoading && selectedList && selectedList.items.length === 0 ? (
+          <View style={styles.empty}>
+            <Text style={styles.emptyTitle}>Nothing here yet</Text>
+            <Text style={styles.emptyBody}>Save titles from Home, the Social Feed, Watch Teams, or Discover to fill this list.</Text>
           </View>
         ) : null}
-        {watchlist?.items.map((item) => {
-          const wasSharedToSelectedTeam = selectedTeam && sharedByItemId[item.id] === selectedTeam.id;
 
-          return (
-            <View key={item.id} style={styles.card}>
-              <View style={styles.cardHeader}>
-                <Pressable onPress={() => void openDetails(item)}>
-                  {item.title.poster_url ? (
-                    <Image source={{ uri: item.title.poster_url }} style={styles.posterImage} />
-                  ) : (
-                    <View style={styles.posterStub}>
-                      <Ionicons name="film" color={colors.accent} size={18} />
-                    </View>
-                  )}
-                </Pressable>
-                <View style={styles.cardCopy}>
-                  <Pressable onPress={() => void openDetails(item)}>
-                    <Text style={styles.title}>{item.title.title}</Text>
-                  </Pressable>
-                  <Text style={styles.meta}>{item.title.content_type}</Text>
-                </View>
-                <View style={styles.rankBox}>
-                  <Text style={styles.rankValue}>{9.5 - Math.min(item.title.title.length % 3, 2)}</Text>
-                </View>
-              </View>
-              <Text numberOfLines={3} style={styles.body}>
-                {item.title.overview || "No overview available yet."}
-              </Text>
-              <Text style={styles.tagline}>#{item.added_via} watch team pick</Text>
-              <View style={styles.actionStack}>
-                <Pressable
-                  disabled={!selectedTeam || wasSharedToSelectedTeam}
-                  onPress={() => void shareItem(item)}
-                  style={[
-                    styles.shareButton,
-                    (!selectedTeam || wasSharedToSelectedTeam) && styles.shareButtonDisabled,
-                  ]}
-                >
-                  <Text style={styles.shareButtonLabel}>
-                    {!selectedTeam
-                      ? "Create or join a team to share"
-                      : wasSharedToSelectedTeam
-                        ? `Shared to ${selectedTeam.name}`
-                        : `Share to ${selectedTeam.name}`}
-                  </Text>
-                </Pressable>
-                <Pressable onPress={() => void removeItem(item.id)} style={styles.removeButton}>
-                  <Text style={styles.removeButtonLabel}>Remove</Text>
-                </Pressable>
-              </View>
+        <View style={styles.grid}>
+          {selectedList?.items.map((item) => (
+            <View key={item.id} style={styles.posterCard}>
+              <Pressable onPress={() => void openDetails(item)}>
+                {item.title.poster_url ? (
+                  <Image source={{ uri: item.title.poster_url }} style={styles.poster} />
+                ) : (
+                  <View style={styles.posterFallback}><Ionicons name="film" size={18} color={colors.muted} /></View>
+                )}
+              </Pressable>
+              <Text numberOfLines={1} style={styles.title}>{item.title.title}</Text>
+              <Text style={styles.meta}>{item.title.content_type}</Text>
+              <Pressable style={styles.removeButton} onPress={() => void removeFromList(item)}>
+                <Text style={styles.removeButtonLabel}>Remove</Text>
+              </Pressable>
             </View>
-          );
-        })}
+          ))}
+        </View>
       </ScrollView>
+
+      <ListEditorModal
+        visible={showCreate}
+        title="Create New List"
+        confirmLabel="Create New List"
+        name={listName}
+        description={listDescription}
+        onChangeName={setListName}
+        onChangeDescription={setListDescription}
+        onCancel={() => setShowCreate(false)}
+        onConfirm={() => void createList()}
+      />
+
+      <ListEditorModal
+        visible={showRename}
+        title="Edit List"
+        confirmLabel="Save Changes"
+        name={listName}
+        description={listDescription}
+        onChangeName={setListName}
+        onChangeDescription={setListDescription}
+        onCancel={() => setShowRename(false)}
+        onConfirm={() => void renameList()}
+      />
+
       <UniversalTitleModal
         visible={showDetails}
         loading={detailLoading}
         title={detailTitle}
         onClose={() => setShowDetails(false)}
-        onSave={() => {
-          setShowDetails(false);
-        }}
-        onPost={() => {
-          setShowDetails(false);
-        }}
+        onSave={() => setToast("Use Save from title cards for now")}
+        onPost={() => setShowDetails(false)}
       />
+
+      {toast ? (
+        <View style={styles.toast}>
+          <Text style={styles.toastText}>{toast}</Text>
+        </View>
+      ) : null}
     </Screen>
   );
 }
 
+function ListEditorModal({
+  visible,
+  title,
+  confirmLabel,
+  name,
+  description,
+  onChangeName,
+  onChangeDescription,
+  onCancel,
+  onConfirm,
+}: {
+  visible: boolean;
+  title: string;
+  confirmLabel: string;
+  name: string;
+  description: string;
+  onChangeName: (value: string) => void;
+  onChangeDescription: (value: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal transparent visible={visible} animationType="slide" onRequestClose={onCancel}>
+      <Pressable style={styles.modalBackdrop} onPress={onCancel} />
+      <View style={styles.modalSheet}>
+        <Text style={styles.modalTitle}>{title}</Text>
+        <TextInput value={name} onChangeText={onChangeName} placeholder="List name" placeholderTextColor={colors.muted} style={styles.input} />
+        <TextInput value={description} onChangeText={onChangeDescription} placeholder="Description (optional)" placeholderTextColor={colors.muted} style={styles.input} />
+        <View style={styles.modalActions}>
+          <Pressable style={styles.modalCancel} onPress={onCancel}><Text style={styles.modalCancelText}>Cancel</Text></Pressable>
+          <Pressable style={[styles.modalConfirm, !name.trim() && styles.modalConfirmDisabled]} onPress={onConfirm} disabled={!name.trim()}>
+            <Text style={styles.modalConfirmText}>{confirmLabel}</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 const styles = StyleSheet.create({
-  summaryCard: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: spacing.md,
-    padding: spacing.lg,
-    borderRadius: radii.lg,
-    backgroundColor: colors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  summaryEyebrow: {
-    color: colors.accent,
-    fontSize: 12,
-    letterSpacing: 1.2,
-    textTransform: "uppercase",
-    fontWeight: "800",
-  },
-  summaryTitle: {
-    marginTop: 4,
-    fontSize: 24,
-    color: colors.ink,
-    fontWeight: "900",
-  },
-  summaryScore: {
-    borderRadius: radii.md,
-    backgroundColor: colors.accent,
-    paddingHorizontal: 14,
-    paddingVertical: 16,
-  },
-  summaryScoreValue: {
-    color: colors.background,
-    fontSize: 24,
-    fontWeight: "900",
-  },
-  shareCard: {
-    gap: spacing.sm,
-    padding: spacing.lg,
-    borderRadius: radii.md,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  shareHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: spacing.sm,
-  },
-  shareTitle: {
-    color: colors.ink,
-    fontSize: 18,
-    fontWeight: "800",
-  },
-  shareMeta: {
-    color: colors.muted,
-    fontSize: 12,
-  },
-  shareEmpty: {
-    color: colors.muted,
-    lineHeight: 22,
-  },
-  teamChipRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.sm,
-  },
-  teamChip: {
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: colors.backgroundElevated,
-  },
-  teamChipSelected: {
-    borderColor: colors.accent,
-    backgroundColor: colors.surfaceMuted,
-  },
-  teamChipLabel: {
-    color: colors.ink,
-    fontWeight: "700",
-  },
-  teamChipLabelSelected: {
-    color: colors.accent,
-  },
-  error: {
-    color: colors.danger,
-    fontSize: 14,
-  },
-  emptyState: {
-    padding: spacing.lg,
-    borderRadius: radii.md,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    gap: 8,
-  },
-  emptyTitle: {
-    fontSize: 20,
-    fontWeight: "800",
-    color: colors.ink,
-  },
-  emptyBody: {
-    color: colors.muted,
-    lineHeight: 22,
-  },
-  list: {
-    gap: spacing.md,
-    paddingBottom: 32,
-  },
-  card: {
-    gap: spacing.sm,
-    padding: spacing.lg,
-    borderRadius: radii.md,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  cardHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-  },
-  posterImage: {
-    width: 52,
-    height: 70,
-    borderRadius: 14,
-    backgroundColor: colors.backgroundElevated,
-  },
-  posterStub: {
-    width: 52,
-    height: 70,
-    borderRadius: 14,
-    backgroundColor: colors.backgroundElevated,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cardCopy: {
-    flex: 1,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: "800",
-    color: colors.ink,
-  },
-  meta: {
-    textTransform: "capitalize",
-    color: colors.accent,
-    fontWeight: "700",
-  },
-  rankBox: {
-    borderRadius: 16,
-    backgroundColor: colors.accent,
-    paddingHorizontal: 10,
-    paddingVertical: 12,
-  },
-  rankValue: {
-    color: colors.background,
-    fontWeight: "900",
-    fontSize: 18,
-  },
-  body: {
-    color: colors.muted,
-    lineHeight: 22,
-  },
-  tagline: {
-    color: colors.accent,
-    fontWeight: "700",
-  },
-  actionStack: {
-    gap: spacing.sm,
-  },
-  shareButton: {
-    borderRadius: radii.pill,
-    backgroundColor: colors.accent,
-    paddingVertical: 12,
-  },
-  shareButtonDisabled: {
-    opacity: 0.55,
-  },
-  shareButtonLabel: {
-    textAlign: "center",
-    color: colors.background,
-    fontWeight: "800",
-  },
-  removeButton: {
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    borderColor: colors.danger,
-    paddingVertical: 12,
-  },
-  removeButtonLabel: {
-    textAlign: "center",
-    color: colors.danger,
-    fontWeight: "800",
-  },
+  content: { gap: spacing.md, paddingBottom: spacing.xl },
+  summary: { borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.surface, padding: spacing.md },
+  summaryText: { color: colors.ink, fontWeight: "800", fontSize: 14 },
+  summarySub: { color: colors.muted, marginTop: 4, fontSize: 12 },
+  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  sectionTitle: { color: colors.ink, fontSize: 20, fontWeight: "900" },
+  createButton: { borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, paddingHorizontal: 12, paddingVertical: 8 },
+  createButtonText: { color: colors.accent, fontSize: 12, fontWeight: "800" },
+  listRow: { gap: spacing.sm, paddingRight: spacing.lg },
+  listCard: { width: 220, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.md, gap: 4 },
+  listCardActive: { borderColor: colors.accent },
+  listName: { color: colors.ink, fontSize: 15, fontWeight: "900" },
+  listMeta: { color: colors.muted, fontSize: 12 },
+  listDesc: { color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 2 },
+  previewRow: { flexDirection: "row", gap: 6, marginTop: 4 },
+  previewPoster: { width: 32, height: 44, borderRadius: 6, backgroundColor: colors.backgroundElevated },
+  actionsRow: { flexDirection: "row", gap: 8 },
+  iconButton: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  empty: { borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.surface, padding: spacing.lg },
+  emptyTitle: { color: colors.ink, fontSize: 16, fontWeight: "800" },
+  emptyBody: { color: colors.muted, marginTop: 4, lineHeight: 20 },
+  grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  posterCard: { width: "48%", borderWidth: 1, borderColor: colors.border, borderRadius: 12, backgroundColor: colors.surface, padding: 8 },
+  poster: { width: "100%", height: 190, borderRadius: 10, backgroundColor: colors.backgroundElevated },
+  posterFallback: { width: "100%", height: 190, borderRadius: 10, backgroundColor: colors.backgroundElevated, alignItems: "center", justifyContent: "center" },
+  title: { color: colors.ink, marginTop: 8, fontSize: 13, fontWeight: "800" },
+  meta: { color: colors.muted, fontSize: 11, marginTop: 2 },
+  removeButton: { borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.backgroundElevated, alignSelf: "flex-start", paddingHorizontal: 10, paddingVertical: 6, marginTop: 8 },
+  removeButtonLabel: { color: colors.ink, fontSize: 11, fontWeight: "700" },
+  error: { color: colors.danger },
+  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(5,10,16,0.72)" },
+  modalSheet: { marginTop: "auto", borderTopLeftRadius: 22, borderTopRightRadius: 22, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.lg, gap: spacing.sm },
+  modalTitle: { color: colors.ink, fontSize: 20, fontWeight: "900" },
+  input: { borderWidth: 1, borderColor: colors.border, borderRadius: 12, backgroundColor: colors.backgroundElevated, color: colors.ink, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14 },
+  modalActions: { flexDirection: "row", gap: spacing.sm },
+  modalCancel: { flex: 1, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.backgroundElevated, alignItems: "center", paddingVertical: 10 },
+  modalCancelText: { color: colors.ink, fontSize: 12, fontWeight: "700" },
+  modalConfirm: { flex: 1, borderRadius: radii.pill, backgroundColor: colors.accent, alignItems: "center", paddingVertical: 10 },
+  modalConfirmDisabled: { opacity: 0.45 },
+  modalConfirmText: { color: colors.background, fontSize: 12, fontWeight: "800" },
+  toast: { position: "absolute", left: spacing.lg, right: spacing.lg, bottom: spacing.xl, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, alignItems: "center", paddingVertical: 10 },
+  toastText: { color: colors.success, fontWeight: "800", fontSize: 12 },
 });
+

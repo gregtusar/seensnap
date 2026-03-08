@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
+  LayoutAnimation,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -11,11 +12,13 @@ import {
   Switch,
   Text,
   TextInput,
+  UIManager,
   View,
 } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 
 import { Screen } from "@/components/screen";
+import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, radii, spacing } from "@/constants/theme";
 import { apiRequest } from "@/lib/api";
@@ -24,6 +27,7 @@ import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title"
 
 type TeamTab = "titles" | "feed" | "members" | "top10";
 type TitleSort = "recent" | "ranked" | "discussed" | "alpha";
+type ReactionKey = "fire" | "heart" | "thumbsDown" | "tomato";
 
 type TeamSummary = {
   id: string;
@@ -70,6 +74,23 @@ type TeamActivity = {
   content_title_id?: string | null;
   payload: Record<string, unknown>;
   created_at: string;
+};
+
+type TeamFeedComment = {
+  id: string;
+  author_id: string;
+  author_name: string;
+  author_avatar?: string | null;
+  text: string;
+  created_at: string;
+};
+
+type TeamFeedInteraction = {
+  reactions: Record<ReactionKey, number>;
+  viewerReaction: ReactionKey | null;
+  comments: TeamFeedComment[];
+  draft: string;
+  expanded: boolean;
 };
 
 type TeamTitle = {
@@ -145,6 +166,7 @@ export default function TeamsScreen() {
   const [editVisibility, setEditVisibility] = useState("private");
   const [memberSearch, setMemberSearch] = useState("");
   const [memberResults, setMemberResults] = useState<TeamUserSearchResult[]>([]);
+  const [selectedMemberIds, setSelectedMemberIds] = useState<Set<string>>(new Set());
 
   const [postText, setPostText] = useState("");
   const [postRating, setPostRating] = useState("");
@@ -152,11 +174,13 @@ export default function TeamsScreen() {
 
   const [detailTitle, setDetailTitle] = useState<UniversalTitle | null>(null);
   const [showDetails, setShowDetails] = useState(false);
+  const [showSaveSheet, setShowSaveSheet] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
 
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [feedInteractions, setFeedInteractions] = useState<Record<string, TeamFeedInteraction>>({});
 
   const selectedTeamSummary = useMemo(() => teams.find((team) => team.id === selectedTeamId) ?? null, [teams, selectedTeamId]);
   const myMembership = useMemo(
@@ -164,6 +188,13 @@ export default function TeamsScreen() {
     [selectedTeam, user?.user_id]
   );
   const canManageTeam = myMembership?.role === "owner" || myMembership?.role === "admin";
+  const titleById = useMemo(() => Object.fromEntries(titles.map((entry) => [entry.content_title_id, entry])), [titles]);
+
+  useEffect(() => {
+    if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
+      UIManager.setLayoutAnimationEnabledExperimental(true);
+    }
+  }, []);
 
   useEffect(() => {
     if (!toast) return;
@@ -180,6 +211,27 @@ export default function TeamsScreen() {
     setEditIcon(selectedTeam.icon || "🍿");
     setEditVisibility(selectedTeam.visibility);
   }, [selectedTeam]);
+
+  useEffect(() => {
+    setFeedInteractions((current) => {
+      const next: Record<string, TeamFeedInteraction> = {};
+      for (const item of feed) {
+        next[item.id] = current[item.id] ?? {
+          reactions: {
+            fire: Number(item.payload.fire_count ?? 0),
+            heart: Number(item.payload.heart_count ?? 0),
+            thumbsDown: Number(item.payload.thumbs_down_count ?? 0),
+            tomato: Number(item.payload.tomato_count ?? 0),
+          },
+          viewerReaction: null,
+          comments: [],
+          draft: "",
+          expanded: false,
+        };
+      }
+      return next;
+    });
+  }, [feed]);
 
   const loadTeams = useCallback(async () => {
     if (!sessionToken) return;
@@ -448,27 +500,6 @@ export default function TeamsScreen() {
     }
   }
 
-  async function addMember(userId: string) {
-    if (!sessionToken || !selectedTeam || !canManageTeam) return;
-    setIsBusy(true);
-    try {
-      await apiRequest<TeamResponse>(`/teams/${selectedTeam.id}/members`, {
-        method: "POST",
-        token: sessionToken,
-        body: JSON.stringify({ user_id: userId, role: "member" }),
-      });
-      setMemberSearch("");
-      setMemberResults([]);
-      await loadSelectedTeam(selectedTeam.id);
-      await loadTeams();
-      setToast("Member added");
-    } catch (memberError) {
-      setError(memberError instanceof Error ? memberError.message : "Failed to add member");
-    } finally {
-      setIsBusy(false);
-    }
-  }
-
   async function removeMember(memberId: string) {
     if (!sessionToken || !selectedTeam || !canManageTeam) return;
     setIsBusy(true);
@@ -487,6 +518,31 @@ export default function TeamsScreen() {
     }
   }
 
+  async function addSelectedMembers() {
+    if (!sessionToken || !selectedTeam || !canManageTeam || selectedMemberIds.size === 0) return;
+    setIsBusy(true);
+    try {
+      for (const userId of selectedMemberIds) {
+        await apiRequest<TeamResponse>(`/teams/${selectedTeam.id}/members`, {
+          method: "POST",
+          token: sessionToken,
+          body: JSON.stringify({ user_id: userId, role: "member" }),
+        });
+      }
+      setSelectedMemberIds(new Set());
+      setMemberSearch("");
+      setMemberResults([]);
+      setShowAddMember(false);
+      await loadSelectedTeam(selectedTeam.id);
+      await loadTeams();
+      setToast(`Added to ${selectedTeam.name}`);
+    } catch (memberError) {
+      setError(memberError instanceof Error ? memberError.message : "Failed to add members");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function openTitleDetails(titleId: string, fallback: { id: string; title: string; content_type?: string; poster_url?: string | null }) {
     if (!sessionToken) return;
     setShowDetails(true);
@@ -500,6 +556,54 @@ export default function TeamsScreen() {
     } finally {
       setDetailLoading(false);
     }
+  }
+
+  function toggleTeamReaction(activityId: string, reaction: ReactionKey) {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setFeedInteractions((current) => {
+      const state = current[activityId];
+      if (!state) return current;
+      const reactions = { ...state.reactions };
+      let viewerReaction: ReactionKey | null = state.viewerReaction;
+      if (state.viewerReaction === reaction) {
+        reactions[reaction] = Math.max(0, reactions[reaction] - 1);
+        viewerReaction = null;
+      } else {
+        if (state.viewerReaction) {
+          reactions[state.viewerReaction] = Math.max(0, reactions[state.viewerReaction] - 1);
+        }
+        reactions[reaction] += 1;
+        viewerReaction = reaction;
+      }
+      return { ...current, [activityId]: { ...state, reactions, viewerReaction } };
+    });
+  }
+
+  function submitTeamComment(activityId: string) {
+    const draft = (feedInteractions[activityId]?.draft ?? "").trim();
+    if (!draft) return;
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setFeedInteractions((current) => {
+      const state = current[activityId];
+      if (!state) return current;
+      const comment: TeamFeedComment = {
+        id: `comment_${Date.now()}`,
+        author_id: user?.user_id ?? "local-user",
+        author_name: user?.display_name ?? "You",
+        author_avatar: user?.avatar_url ?? null,
+        text: draft,
+        created_at: new Date().toISOString(),
+      };
+      return {
+        ...current,
+        [activityId]: {
+          ...state,
+          comments: [...state.comments, comment],
+          draft: "",
+          expanded: true,
+        },
+      };
+    });
   }
 
   return (
@@ -576,6 +680,9 @@ export default function TeamsScreen() {
               {canManageTeam ? (
                 <Pressable style={styles.quickButton} onPress={() => setShowEditTeam(true)}><Text style={styles.quickButtonText}>Edit Team</Text></Pressable>
               ) : null}
+              {canManageTeam ? (
+                <Pressable style={styles.quickButton} onPress={() => setShowAddMember(true)}><Text style={styles.quickButtonText}>Add Member</Text></Pressable>
+              ) : null}
             </View>
 
             <View style={styles.tabRow}>
@@ -616,6 +723,22 @@ export default function TeamsScreen() {
                 {feed.length === 0 ? <Text style={styles.emptyBody}>No posts yet. Start the conversation by recommending a title or sharing a reaction.</Text> : null}
                 {feed.map((item) => (
                   <View key={item.id} style={styles.feedCard}>
+                    {item.content_title_id && titleById[item.content_title_id] ? (
+                      <Pressable
+                        style={styles.teamFeedTitleRow}
+                        onPress={() =>
+                          void openTitleDetails(item.content_title_id!, {
+                            id: item.content_title_id!,
+                            title: titleById[item.content_title_id!].title_name,
+                            content_type: titleById[item.content_title_id!].content_type,
+                            poster_url: titleById[item.content_title_id!].poster_url,
+                          })
+                        }
+                      >
+                        <PosterThumb uri={titleById[item.content_title_id].poster_url} small />
+                        <Text style={styles.teamFeedTitleText}>{titleById[item.content_title_id].title_name}</Text>
+                      </Pressable>
+                    ) : null}
                     <View style={styles.feedTop}>
                       <Avatar uri={item.actor_avatar_url} label={item.actor_display_name || "U"} size={28} />
                       <View style={{ flex: 1 }}>
@@ -626,12 +749,84 @@ export default function TeamsScreen() {
                     </View>
                     <Text style={styles.feedBody}>{String(item.payload.text || item.payload.comment || item.payload.title_name || "")}</Text>
                     <View style={styles.reactionStrip}>
-                      <Text style={styles.reactionChip}>🔥 {Number(item.payload.fire_count ?? 4)}</Text>
-                      <Text style={styles.reactionChip}>❤️ {Number(item.payload.heart_count ?? 7)}</Text>
-                      <Text style={styles.reactionChip}>👎 {Number(item.payload.thumbs_down_count ?? 0)}</Text>
-                      <Text style={styles.reactionChip}>🍅 {Number(item.payload.tomato_count ?? 0)}</Text>
+                      {[
+                        { key: "fire" as const, icon: "🔥", label: "Fire" },
+                        { key: "heart" as const, icon: "❤️", label: "Heart" },
+                        { key: "thumbsDown" as const, icon: "👎", label: "Thumbs Down" },
+                        { key: "tomato" as const, icon: "🍅", label: "Tomato" },
+                      ].map((reaction) => (
+                        <Pressable
+                          key={reaction.key}
+                          onPress={() => toggleTeamReaction(item.id, reaction.key)}
+                          style={[
+                            styles.reactionChip,
+                            feedInteractions[item.id]?.viewerReaction === reaction.key && styles.reactionChipActive,
+                          ]}
+                        >
+                          <Text style={styles.reactionChipText}>{reaction.icon} {feedInteractions[item.id]?.reactions[reaction.key] ?? 0}</Text>
+                        </Pressable>
+                      ))}
                     </View>
-                    <Pressable style={styles.commentPrompt}><Text style={styles.commentPromptText}>Add a comment…</Text></Pressable>
+                    {(feedInteractions[item.id]?.comments.length ?? 0) > 0 ? (
+                      <Pressable
+                        onPress={() =>
+                          setFeedInteractions((current) => {
+                            const state = current[item.id];
+                            if (!state) return current;
+                            return {
+                              ...current,
+                              [item.id]: { ...state, expanded: !state.expanded },
+                            };
+                          })
+                        }
+                      >
+                        <Text style={styles.feedCommentToggle}>
+                          {feedInteractions[item.id]?.expanded
+                            ? "Hide comments"
+                            : `View all ${feedInteractions[item.id]?.comments.length ?? 0} comments`}
+                        </Text>
+                      </Pressable>
+                    ) : null}
+                    {(feedInteractions[item.id]?.expanded
+                      ? feedInteractions[item.id]?.comments
+                      : (feedInteractions[item.id]?.comments ?? []).slice(0, 2)
+                    )?.map((comment) => (
+                      <View key={comment.id} style={styles.teamCommentRow}>
+                        <Avatar uri={comment.author_avatar} label={comment.author_name} size={22} />
+                        <Text style={styles.teamCommentText}>
+                          <Text style={styles.teamCommentAuthor}>{comment.author_name}: </Text>
+                          {comment.text}
+                        </Text>
+                      </View>
+                    ))}
+                    <View style={styles.teamCommentComposer}>
+                      <TextInput
+                        value={feedInteractions[item.id]?.draft ?? ""}
+                        onChangeText={(value) =>
+                          setFeedInteractions((current) => {
+                            const state = current[item.id];
+                            if (!state) return current;
+                            return {
+                              ...current,
+                              [item.id]: { ...state, draft: value },
+                            };
+                          })
+                        }
+                        placeholder="Add a comment..."
+                        placeholderTextColor={colors.muted}
+                        style={styles.teamCommentInput}
+                      />
+                      <Pressable
+                        onPress={() => submitTeamComment(item.id)}
+                        style={[
+                          styles.teamCommentSend,
+                          !(feedInteractions[item.id]?.draft ?? "").trim() && styles.teamCommentSendDisabled,
+                        ]}
+                        disabled={!(feedInteractions[item.id]?.draft ?? "").trim()}
+                      >
+                        <Text style={styles.teamCommentSendText}>Send</Text>
+                      </Pressable>
+                    </View>
                   </View>
                 ))}
               </View>
@@ -695,8 +890,17 @@ export default function TeamsScreen() {
           <TextInput value={createDescription} onChangeText={setCreateDescription} placeholder="Team description" placeholderTextColor={colors.muted} style={styles.input} multiline />
           <TextInput value={createIcon} onChangeText={setCreateIcon} placeholder="Icon/emoji" placeholderTextColor={colors.muted} style={styles.input} />
         </ScrollView>
-        <View style={styles.sheetFooter}>
-          <Pressable style={styles.primaryCta} onPress={() => void createTeam()} disabled={isBusy}><Text style={styles.primaryCtaText}>{isBusy ? "Saving..." : "Create Team"}</Text></Pressable>
+        <View style={styles.sheetFooterRow}>
+          <Pressable style={styles.sheetCancel} onPress={() => setShowCreate(false)}>
+            <Text style={styles.sheetCancelText}>Cancel</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.primaryCta, (!createName.trim() || isBusy) && styles.primaryCtaDisabled]}
+            onPress={() => void createTeam()}
+            disabled={isBusy || !createName.trim()}
+          >
+            <Text style={styles.primaryCtaText}>{isBusy ? "Saving..." : "Create Team"}</Text>
+          </Pressable>
         </View>
       </KeyboardSheet>
 
@@ -738,7 +942,12 @@ export default function TeamsScreen() {
           <View style={styles.switchRow}><Text style={styles.searchMeta}>Also post to team feed</Text><Switch value={alsoPost} onValueChange={setAlsoPost} trackColor={{ true: colors.accent }} /></View>
         </ScrollView>
         <View style={styles.sheetFooter}>
-          <Pressable style={styles.primaryCta} onPress={() => void addTitleToTeam()} disabled={isBusy || !selectedTitle}><Text style={styles.primaryCtaText}>Add to Team</Text></Pressable>
+          <View style={styles.sheetFooterRow}>
+            <Pressable style={styles.sheetCancel} onPress={() => setShowAddTitle(false)}>
+              <Text style={styles.sheetCancelText}>Cancel</Text>
+            </Pressable>
+            <Pressable style={[styles.primaryCta, (isBusy || !selectedTitle) && styles.primaryCtaDisabled]} onPress={() => void addTitleToTeam()} disabled={isBusy || !selectedTitle}><Text style={styles.primaryCtaText}>Add to Team</Text></Pressable>
+          </View>
         </View>
       </KeyboardSheet>
 
@@ -770,6 +979,15 @@ export default function TeamsScreen() {
           <TextInput value={editName} onChangeText={setEditName} placeholder="Team name" placeholderTextColor={colors.muted} style={styles.input} />
           <TextInput value={editDescription} onChangeText={setEditDescription} placeholder="Description" placeholderTextColor={colors.muted} style={styles.input} multiline />
           <TextInput value={editVisibility} onChangeText={setEditVisibility} placeholder="Visibility (private/invite_only/public)" placeholderTextColor={colors.muted} style={styles.input} />
+          <Pressable
+            style={styles.sheetCancel}
+            onPress={() => {
+              setShowEditTeam(false);
+              setShowAddMember(true);
+            }}
+          >
+            <Text style={styles.sheetCancelText}>Add Member</Text>
+          </Pressable>
         </ScrollView>
         <View style={styles.sheetFooter}>
           <Pressable style={styles.primaryCta} onPress={() => void saveTeamEdits()} disabled={isBusy || !canManageTeam}><Text style={styles.primaryCtaText}>Save Team</Text></Pressable>
@@ -777,24 +995,49 @@ export default function TeamsScreen() {
       </KeyboardSheet>
 
       <KeyboardSheet visible={showAddMember} onClose={() => setShowAddMember(false)}>
-        <Text style={styles.modalTitle}>Add Members</Text>
+        <Text style={styles.modalTitle}>Add Member</Text>
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.sheetBody}>
           <TextInput value={memberSearch} onChangeText={setMemberSearch} placeholder="Search users by name or username" placeholderTextColor={colors.muted} style={styles.input} />
           <ScrollView style={{ maxHeight: 260 }}>
             {memberResults.map((entry) => (
-              <View key={entry.user_id} style={styles.memberSearchRow}>
+              <Pressable
+                key={entry.user_id}
+                style={styles.memberSearchRow}
+                onPress={() =>
+                  setSelectedMemberIds((current) => {
+                    const next = new Set(current);
+                    if (next.has(entry.user_id)) next.delete(entry.user_id);
+                    else next.add(entry.user_id);
+                    return next;
+                  })
+                }
+              >
                 <Avatar uri={entry.avatar_url} label={entry.display_name || "U"} size={28} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.searchName}>{entry.display_name || "User"}</Text>
                   <Text style={styles.searchMeta}>@{entry.username || "user"}</Text>
                 </View>
-                <Pressable style={styles.quickButton} onPress={() => void addMember(entry.user_id)}>
-                  <Text style={styles.quickButtonText}>Add</Text>
-                </Pressable>
-              </View>
+                <Ionicons
+                  name={selectedMemberIds.has(entry.user_id) ? "checkmark-circle" : "ellipse-outline"}
+                  size={20}
+                  color={selectedMemberIds.has(entry.user_id) ? colors.accent : colors.muted}
+                />
+              </Pressable>
             ))}
           </ScrollView>
         </ScrollView>
+        <View style={styles.sheetFooterRow}>
+          <Pressable style={styles.sheetCancel} onPress={() => setShowAddMember(false)}>
+            <Text style={styles.sheetCancelText}>Cancel</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.primaryCta, (isBusy || selectedMemberIds.size === 0) && styles.primaryCtaDisabled]}
+            onPress={() => void addSelectedMembers()}
+            disabled={isBusy || selectedMemberIds.size === 0}
+          >
+            <Text style={styles.primaryCtaText}>Add Member</Text>
+          </Pressable>
+        </View>
       </KeyboardSheet>
 
       <UniversalTitleModal
@@ -802,8 +1045,18 @@ export default function TeamsScreen() {
         loading={detailLoading}
         title={detailTitle}
         onClose={() => setShowDetails(false)}
-        onSave={() => setToast("Saved to My Picks")}
+        onSave={() => setShowSaveSheet(true)}
         onPost={() => setToast("Post from title coming next")}
+      />
+
+      <SaveToListSheet
+        visible={showSaveSheet}
+        token={sessionToken}
+        titleId={detailTitle?.id ?? null}
+        source="watch_team"
+        onClose={() => setShowSaveSheet(false)}
+        onSaved={(listName, alreadySaved) => setToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`)}
+        onError={(message) => setError(message)}
       />
 
       {toast ? <View style={styles.toast}><Text style={styles.toastText}>{toast}</Text></View> : null}
@@ -883,9 +1136,19 @@ function readableFeedType(type: string) {
     case "title_added":
       return "added a title";
     case "team_post":
-      return "posted to team feed";
+      return "posted to the team";
+    case "watchlist_item_added":
+      return "added to Watchlist";
+    case "activity_reacted":
+      return "reacted to a post";
+    case "activity_commented":
+      return "commented on a post";
     case "member_joined":
       return "joined the team";
+    case "ranking_updated":
+      return "updated rankings";
+    case "poll_started":
+      return "started a poll";
     default:
       return type.replaceAll("_", " ");
   }
@@ -895,6 +1158,7 @@ const styles = StyleSheet.create({
   content: { gap: spacing.md, paddingBottom: spacing.xl },
   actionRow: { flexDirection: "row", gap: spacing.sm },
   primaryCta: { flex: 1, borderRadius: radii.pill, backgroundColor: colors.accent, paddingVertical: 11, alignItems: "center" },
+  primaryCtaDisabled: { opacity: 0.45 },
   primaryCtaText: { color: colors.background, fontWeight: "800", fontSize: 12 },
   secondaryCta: { flex: 1, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, paddingVertical: 11, alignItems: "center" },
   secondaryCtaText: { color: colors.ink, fontWeight: "700", fontSize: 12 },
@@ -940,8 +1204,21 @@ const styles = StyleSheet.create({
   feedType: { color: colors.muted, fontSize: 11 },
   feedTime: { color: colors.muted, fontSize: 11 },
   feedBody: { color: colors.ink, lineHeight: 20, fontSize: 13 },
+  teamFeedTitleRow: { flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 10, padding: 6, backgroundColor: colors.surface },
+  teamFeedTitleText: { color: colors.accent, fontSize: 12, fontWeight: "700" },
   reactionStrip: { flexDirection: "row", gap: 8, marginTop: 2, flexWrap: "wrap" },
-  reactionChip: { color: colors.ink, fontSize: 12, fontWeight: "700", borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, borderRadius: radii.pill, paddingHorizontal: 8, paddingVertical: 4 },
+  reactionChip: { borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, borderRadius: radii.pill, paddingHorizontal: 8, paddingVertical: 4 },
+  reactionChipActive: { borderColor: colors.accent, backgroundColor: "rgba(244,196,48,0.14)" },
+  reactionChipText: { color: colors.ink, fontSize: 12, fontWeight: "700" },
+  feedCommentToggle: { color: colors.muted, fontSize: 12, marginTop: 2 },
+  teamCommentRow: { flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 2 },
+  teamCommentText: { color: colors.ink, fontSize: 12, lineHeight: 18, flex: 1 },
+  teamCommentAuthor: { color: colors.ink, fontWeight: "800" },
+  teamCommentComposer: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
+  teamCommentInput: { flex: 1, borderWidth: 1, borderColor: colors.border, borderRadius: radii.pill, backgroundColor: colors.surface, color: colors.ink, paddingHorizontal: 12, paddingVertical: 8, fontSize: 12 },
+  teamCommentSend: { borderRadius: radii.pill, backgroundColor: colors.accent, paddingHorizontal: 12, paddingVertical: 8 },
+  teamCommentSendDisabled: { opacity: 0.45 },
+  teamCommentSendText: { color: colors.background, fontWeight: "800", fontSize: 12 },
   commentPrompt: { borderWidth: 1, borderColor: colors.border, borderRadius: radii.pill, backgroundColor: colors.surface, paddingHorizontal: 10, paddingVertical: 8, marginTop: 6 },
   commentPromptText: { color: colors.muted, fontSize: 12 },
   memberRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 8, backgroundColor: colors.backgroundElevated },
@@ -959,7 +1236,10 @@ const styles = StyleSheet.create({
   modalSheet: { borderTopLeftRadius: 22, borderTopRightRadius: 22, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.lg, gap: spacing.sm, maxHeight: "88%" },
   modalTitle: { color: colors.ink, fontWeight: "900", fontSize: 20 },
   sheetBody: { gap: spacing.sm, paddingBottom: spacing.sm },
+  sheetFooterRow: { flexDirection: "row", gap: spacing.sm, paddingBottom: Platform.OS === "ios" ? 8 : 0 },
   sheetFooter: { paddingBottom: Platform.OS === "ios" ? 8 : 0 },
+  sheetCancel: { flex: 1, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.backgroundElevated, paddingVertical: 11, alignItems: "center" },
+  sheetCancelText: { color: colors.ink, fontWeight: "700", fontSize: 12 },
   input: { borderWidth: 1, borderColor: colors.border, borderRadius: 12, backgroundColor: colors.backgroundElevated, color: colors.ink, paddingVertical: 10, paddingHorizontal: 12, fontSize: 14 },
   searchRow: { flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 10, backgroundColor: colors.backgroundElevated, padding: 8, marginBottom: 6 },
   memberSearchRow: { flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 10, backgroundColor: colors.backgroundElevated, padding: 8, marginBottom: 6 },

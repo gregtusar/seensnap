@@ -41,7 +41,9 @@ class Watchlist(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
     name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str | None] = mapped_column(String(280))
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_system_list: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

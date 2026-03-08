@@ -20,6 +20,7 @@ import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { colors, radii, spacing } from "@/constants/theme";
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
+import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 
@@ -43,24 +44,11 @@ type Title = {
   metadata_source?: string;
 };
 
-type WatchlistItem = {
-  id: string;
-  content_title_id: string;
-};
-
-type WatchlistResponse = {
-  id: string;
-  name: string;
-  items: WatchlistItem[];
-};
-
 type FeedEvent = {
   id: string;
   title?: Title | null;
   payload: Record<string, unknown>;
 };
-
-const SAVE_LISTS = ["My Picks", "Favorites", "Watch Soon", "Date Night", "Sci-Fi", "New List"] as const;
 
 export default function HomeScreen() {
   const { sessionToken, user } = useAuth();
@@ -130,11 +118,11 @@ export default function HomeScreen() {
       }
       setError(null);
       try {
-        const [watchlist, forYou] = await Promise.all([
-          apiRequest<WatchlistResponse>("/me/watchlist", { token: sessionToken }),
+        const [savedTitleIds, forYou] = await Promise.all([
+          apiRequest<string[]>("/me/watchlist/title-ids", { token: sessionToken }),
           apiRequest<FeedEvent[]>("/feed/for-you?limit=100", { token: sessionToken }),
         ]);
-        setSavedIds(new Set(watchlist.items.map((item) => item.content_title_id)));
+        setSavedIds(new Set(savedTitleIds));
         setRecommendedSource(forYou);
       } catch (loadError) {
         setError(loadError instanceof Error ? loadError.message : "Failed to load home");
@@ -168,22 +156,9 @@ export default function HomeScreen() {
     return () => clearTimeout(timer);
   }, [query, sessionToken]);
 
-  async function quickSave(title: Title, listName = "My Picks") {
-    if (!sessionToken) {
-      return;
-    }
-    try {
-      const watchlist = await apiRequest<WatchlistResponse>("/me/watchlist/items", {
-        method: "POST",
-        token: sessionToken,
-        body: JSON.stringify({ content_title_id: title.id, added_via: "home_v2" }),
-      });
-      setSavedIds(new Set(watchlist.items.map((item) => item.content_title_id)));
-      setToast(listName === "My Picks" ? "Saved to My Picks" : `Saved to ${listName}`);
-      setShowSaveSheet(false);
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Save failed");
-    }
+  function openSaveSheet(title: Title) {
+    setSelectedTitle(title);
+    setShowSaveSheet(true);
   }
 
   async function openDetails(title: Title) {
@@ -327,11 +302,7 @@ export default function HomeScreen() {
               </Text>
               <View style={styles.actionRow}>
                 <Pressable
-                  onPress={() => void quickSave(title)}
-                  onLongPress={() => {
-                    setSelectedTitle(title);
-                    setShowSaveSheet(true);
-                  }}
+                  onPress={() => openSaveSheet(title)}
                   style={({ pressed }) => [
                     styles.actionPill,
                     savedIds.has(title.id) && styles.actionPillSaved,
@@ -396,11 +367,7 @@ export default function HomeScreen() {
               </Text>
               <View style={styles.actionRow}>
                 <Pressable
-                  onPress={() => void quickSave(title)}
-                  onLongPress={() => {
-                    setSelectedTitle(title);
-                    setShowSaveSheet(true);
-                  }}
+                  onPress={() => openSaveSheet(title)}
                   style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}
                 >
                   <Ionicons name="bookmark-outline" size={14} color={colors.ink} />
@@ -424,17 +391,20 @@ export default function HomeScreen() {
         </ScrollView>
       </ScrollView>
 
-      <Modal transparent visible={showSaveSheet} animationType="slide" onRequestClose={() => setShowSaveSheet(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setShowSaveSheet(false)} />
-        <View style={styles.sheet}>
-          <Text style={styles.sheetTitle}>Save to a List</Text>
-          {SAVE_LISTS.map((name) => (
-            <Pressable key={name} style={styles.sheetButton} onPress={() => selectedTitle && void quickSave(selectedTitle, name)}>
-              <Text style={styles.sheetButtonLabel}>{name}</Text>
-            </Pressable>
-          ))}
-        </View>
-      </Modal>
+      <SaveToListSheet
+        visible={showSaveSheet}
+        token={sessionToken}
+        titleId={selectedTitle?.id ?? null}
+        source="home"
+        onClose={() => setShowSaveSheet(false)}
+        onSaved={(listName, alreadySaved) => {
+          if (selectedTitle) {
+            setSavedIds((current) => new Set(current).add(selectedTitle.id));
+          }
+          setToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`);
+        }}
+        onError={(message) => setError(message)}
+      />
 
       <Modal transparent visible={showPostComposer} animationType="slide" onRequestClose={() => setShowPostComposer(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setShowPostComposer(false)} />
@@ -497,7 +467,7 @@ export default function HomeScreen() {
         onClose={() => setShowDetails(false)}
         onSave={() => {
           if (selectedTitle) {
-            void quickSave(selectedTitle);
+            openSaveSheet(selectedTitle);
           }
         }}
         onPost={() => {

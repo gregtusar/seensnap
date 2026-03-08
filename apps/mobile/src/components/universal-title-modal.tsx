@@ -1,4 +1,4 @@
-import { Image, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { colors, radii, spacing } from "@/constants/theme";
 import type { UniversalTitle } from "@/lib/universal-title";
@@ -25,34 +25,52 @@ export function UniversalTitleModal({
   onAddToTeam,
 }: Props) {
   const posterOrBackdrop = title?.backdropUrl ?? title?.posterUrl ?? null;
+  const metaParts: string[] = [];
+  if (typeof title?.ratingTmdb === "number") {
+    metaParts.push(`⭐ ${title.ratingTmdb.toFixed(1)} TMDB`);
+  }
+  if (title?.mediaType === "movie" && typeof title.runtimeMinutes === "number") {
+    metaParts.push(`⏱ ${title.runtimeMinutes}m`);
+  }
+  if (title?.mediaType === "tv" && typeof title.seasons === "number") {
+    metaParts.push(`📺 ${title.seasons} Seasons`);
+  }
+  if (title?.mediaType === "tv" && typeof title.episodeRuntimeMinutes === "number") {
+    metaParts.push(`⏱ ${title.episodeRuntimeMinutes}m`);
+  }
+  if (title?.genres?.length) {
+    metaParts.push(`🎭 ${title.genres.slice(0, 3).join(", ")}`);
+  }
+  if (title?.language) {
+    metaParts.push(`🌎 ${title.language}`);
+  }
 
   return (
     <Modal transparent animationType="slide" visible={visible} onRequestClose={onClose}>
       <View style={styles.backdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
         <View style={styles.sheet}>
-          {loading ? <Text style={styles.meta}>Loading details...</Text> : null}
-          {!loading && posterOrBackdrop ? (
-            <Image source={{ uri: posterOrBackdrop }} style={styles.hero} resizeMode="cover" />
-          ) : (
-            <View style={styles.heroFallback}><Text style={styles.heroFallbackText}>No image</Text></View>
-          )}
-          <Text style={styles.title}>{title?.title ?? "Title"}</Text>
-          <Text style={styles.meta}>
-            {(title?.year ?? "-") + " • " + (title?.mediaType === "movie" ? "Movie" : "TV Series")}
-          </Text>
-          <Text style={styles.meta}>
-            ⭐ {title?.ratingTmdb?.toFixed(1) ?? "-"} • {title?.mediaType === "movie" ? `⏱ ${title?.runtimeMinutes ?? "-"}m` : `📺 ${title?.seasons ?? "-"} Seasons`} • 🎭 {(title?.genres ?? []).slice(0, 2).join(", ") || "-"}
-          </Text>
-          <Text style={styles.meta}>🌎 {title?.language ?? "-"}</Text>
-          <Text style={styles.body}>{title?.description ?? "Full details are unavailable right now."}</Text>
-          {(title?.credits.creator.length || title?.credits.director.length || title?.credits.cast.length) ? (
-            <Text style={styles.credits}>
-              {title?.credits.creator.length ? `Creator: ${title.credits.creator.join(", ")}\n` : ""}
-              {title?.credits.director.length ? `Director: ${title.credits.director.join(", ")}\n` : ""}
-              {title?.credits.cast.length ? `Cast: ${title.credits.cast.slice(0, 3).join(", ")}` : ""}
+          <ScrollView contentContainerStyle={styles.scrollBody} showsVerticalScrollIndicator>
+            {loading ? <Text style={styles.meta}>Loading details...</Text> : null}
+            {!loading && posterOrBackdrop ? (
+              <Image source={{ uri: posterOrBackdrop }} style={styles.hero} resizeMode="cover" />
+            ) : (
+              <View style={styles.heroFallback}><Text style={styles.heroFallbackText}>No image</Text></View>
+            )}
+            <Text style={styles.title}>{title?.title ?? "Title"}</Text>
+            <Text style={styles.meta}>
+              {(title?.year ?? "-") + " • " + (title?.mediaType === "movie" ? "Movie" : "TV Series")}
             </Text>
-          ) : null}
+            {metaParts.length ? <Text style={styles.meta}>{metaParts.join(" • ")}</Text> : null}
+            <Text style={styles.body}>{title?.description ?? "Full details are unavailable right now."}</Text>
+            {(title?.credits.creator.length || title?.credits.director.length || title?.credits.cast.length) ? (
+              <Text style={styles.credits}>
+                {title?.credits.creator.length ? `Creator: ${title.credits.creator.join(", ")}\n` : ""}
+                {title?.credits.director.length ? `Director: ${title.credits.director.join(", ")}\n` : ""}
+                {title?.credits.cast.length ? `Cast: ${title.credits.cast.slice(0, 5).join(", ")}` : ""}
+              </Text>
+            ) : null}
+          </ScrollView>
           <View style={styles.actions}>
             <Pressable style={[styles.primary, isSaved && styles.primarySaved]} onPress={onSave}>
               <Text style={[styles.primaryText, isSaved && styles.primaryTextSaved]}>
@@ -88,6 +106,10 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     gap: spacing.sm,
     maxHeight: "92%",
+  },
+  scrollBody: {
+    gap: spacing.sm,
+    paddingBottom: spacing.sm,
   },
   hero: {
     width: "100%",

@@ -1,46 +1,131 @@
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentTitle
 from app.models.social import Team, TeamMember, Watchlist, WatchlistItem
 from app.schemas.content import TitleResponse
-from app.schemas.watchlist import WatchlistAddRequest, WatchlistItemResponse, WatchlistResponse
+from app.schemas.watchlist import (
+    WatchlistAddRequest,
+    WatchlistItemResponse,
+    WatchlistListCreateRequest,
+    WatchlistListSummaryResponse,
+    WatchlistListUpdateRequest,
+    WatchlistResponse,
+)
 from app.services.activity import log_team_activity
 from app.services.feed import create_feed_event
+from app.services.watchlists import (
+    create_watchlist,
+    delete_watchlist,
+    ensure_default_watchlists,
+    get_default_watchlist,
+    get_watchlist as get_watchlist_record,
+    list_watchlists as list_watchlist_records,
+    update_watchlist,
+)
 
 router = APIRouter()
 
 
 @router.get("", response_model=WatchlistResponse)
 def get_watchlist(current_user: CurrentUser, db: DbSession) -> WatchlistResponse:
-    watchlist = _get_or_create_watchlist(db, current_user.id)
-    items = db.scalars(
-        select(WatchlistItem).where(WatchlistItem.watchlist_id == watchlist.id).order_by(WatchlistItem.created_at.desc())
-    ).all()
-    titles = {
-        title.id: title
-        for title in db.scalars(
-            select(ContentTitle).where(ContentTitle.id.in_([item.content_title_id for item in items]))
+    watchlist = get_default_watchlist(db, current_user.id)
+    return _watchlist_response(db, watchlist)
+
+
+@router.get("/lists", response_model=list[WatchlistListSummaryResponse])
+def get_watchlist_lists(current_user: CurrentUser, db: DbSession) -> list[WatchlistListSummaryResponse]:
+    lists = list_watchlist_records(db, current_user.id)
+    if not lists:
+        return []
+    list_ids = [item.id for item in lists]
+    counts = dict(
+        db.execute(
+            select(WatchlistItem.watchlist_id, func.count(WatchlistItem.id))
+            .where(WatchlistItem.watchlist_id.in_(list_ids))
+            .group_by(WatchlistItem.watchlist_id)
         ).all()
-    }
-    return WatchlistResponse(
-        id=watchlist.id,
-        name=watchlist.name,
-        items=[
-            WatchlistItemResponse(
-                id=item.id,
-                content_title_id=item.content_title_id,
-                added_via=item.added_via,
-                created_at=item.created_at,
-                title=_title_response(titles[item.content_title_id]),
-            )
-            for item in items
-            if item.content_title_id in titles
-        ],
     )
+    previews: dict[UUID, list[str]] = {list_id: [] for list_id in list_ids}
+    items = db.scalars(
+        select(WatchlistItem)
+        .where(WatchlistItem.watchlist_id.in_(list_ids))
+        .order_by(WatchlistItem.created_at.desc())
+    ).all()
+    if items:
+        title_ids = {item.content_title_id for item in items}
+        titles = {
+            title.id: title.poster_url
+            for title in db.scalars(select(ContentTitle).where(ContentTitle.id.in_(title_ids))).all()
+        }
+        for item in items:
+            if len(previews[item.watchlist_id]) >= 4:
+                continue
+            poster = titles.get(item.content_title_id)
+            if poster:
+                previews[item.watchlist_id].append(poster)
+    return [
+        WatchlistListSummaryResponse(
+            id=list_item.id,
+            name=list_item.name,
+            description=list_item.description,
+            is_default=list_item.is_default,
+            is_system_list=list_item.is_system_list,
+            title_count=int(counts.get(list_item.id, 0)),
+            updated_at=list_item.updated_at,
+            preview_posters=previews.get(list_item.id, []),
+        )
+        for list_item in lists
+    ]
+
+
+@router.get("/title-ids", response_model=list[UUID])
+def get_saved_title_ids(current_user: CurrentUser, db: DbSession) -> list[UUID]:
+    ensure_default_watchlists(db, current_user.id)
+    return db.scalars(
+        select(WatchlistItem.content_title_id)
+        .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
+        .where(Watchlist.owner_user_id == current_user.id)
+    ).all()
+
+
+@router.get("/lists/{list_id}", response_model=WatchlistResponse)
+def get_watchlist_by_id(list_id: UUID, current_user: CurrentUser, db: DbSession) -> WatchlistResponse:
+    ensure_default_watchlists(db, current_user.id)
+    watchlist = get_watchlist_record(db, current_user.id, list_id)
+    return _watchlist_response(db, watchlist)
+
+
+@router.post("/lists", response_model=WatchlistResponse, status_code=status.HTTP_201_CREATED)
+def create_watchlist_list(
+    payload: WatchlistListCreateRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> WatchlistResponse:
+    watchlist = create_watchlist(db, current_user.id, name=payload.name, description=payload.description)
+    return _watchlist_response(db, watchlist)
+
+
+@router.patch("/lists/{list_id}", response_model=WatchlistResponse)
+def patch_watchlist_list(
+    list_id: UUID,
+    payload: WatchlistListUpdateRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> WatchlistResponse:
+    watchlist = get_watchlist_record(db, current_user.id, list_id)
+    updated = update_watchlist(db, watchlist, name=payload.name, description=payload.description)
+    return _watchlist_response(db, updated)
+
+
+@router.delete("/lists/{list_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_watchlist_list(list_id: UUID, current_user: CurrentUser, db: DbSession) -> None:
+    watchlist = get_watchlist_record(db, current_user.id, list_id)
+    delete_watchlist(db, watchlist)
+    return None
 
 
 @router.post("/items", response_model=WatchlistResponse, status_code=status.HTTP_201_CREATED)
@@ -49,7 +134,11 @@ def add_watchlist_item(
     current_user: CurrentUser,
     db: DbSession,
 ) -> WatchlistResponse:
-    watchlist = _get_or_create_watchlist(db, current_user.id)
+    watchlist = (
+        get_watchlist_record(db, current_user.id, payload.list_id)
+        if payload.list_id is not None
+        else get_default_watchlist(db, current_user.id)
+    )
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == payload.content_title_id))
     if title is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not found")
@@ -68,74 +157,123 @@ def add_watchlist_item(
         )
         db.add(item)
         db.flush()
-        team_ids = db.scalars(
-            select(TeamMember.team_id)
-            .join(Team, Team.id == TeamMember.team_id)
-            .where(
-                TeamMember.user_id == current_user.id,
-                TeamMember.status == "active",
-                Team.archived_at.is_(None),
-            )
-        ).all()
-        for team_id in team_ids:
-            log_team_activity(
-                db,
-                team_id=team_id,
-                actor_user_id=current_user.id,
-                activity_type="watchlist_item_added",
-                content_title_id=title.id,
-                entity_id=item.id,
-                payload={
-                    "title_name": title.title,
-                    "content_type": title.content_type,
-                    "list_name": watchlist.name,
-                    "added_via": payload.added_via,
-                },
-            )
-            create_feed_event(
-                db,
-                actor_user_id=current_user.id,
-                team_id=team_id,
-                content_title_id=title.id,
-                event_type="watchlist_item_added",
-                source_type="watchlist_item",
-                source_id=item.id,
-                payload={
-                    "title_name": title.title,
-                    "content_type": title.content_type,
-                    "list_name": watchlist.name,
-                    "added_via": payload.added_via,
-                    "cta": "add_to_watchlist",
-                },
-            )
+        _log_watchlist_to_teams(db, current_user.id, title, watchlist.name, payload.added_via, item.id)
         db.commit()
-
-    return get_watchlist(current_user, db)
+    return _watchlist_response(db, watchlist)
 
 
 @router.delete("/items/{item_id}", response_model=WatchlistResponse)
 def delete_watchlist_item(item_id: UUID, current_user: CurrentUser, db: DbSession) -> WatchlistResponse:
-    watchlist = _get_or_create_watchlist(db, current_user.id)
+    ensure_default_watchlists(db, current_user.id)
     item = db.scalar(
-        select(WatchlistItem).where(WatchlistItem.id == item_id, WatchlistItem.watchlist_id == watchlist.id)
+        select(WatchlistItem)
+        .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
+        .where(WatchlistItem.id == item_id, Watchlist.owner_user_id == current_user.id)
     )
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Watchlist item not found")
+    watchlist = db.scalar(select(Watchlist).where(Watchlist.id == item.watchlist_id))
     db.execute(delete(WatchlistItem).where(WatchlistItem.id == item.id))
     db.commit()
-    return get_watchlist(current_user, db)
-
-
-def _get_or_create_watchlist(db: DbSession, user_id) -> Watchlist:
-    watchlist = db.scalar(
-        select(Watchlist).where(Watchlist.owner_user_id == user_id, Watchlist.is_default.is_(True))
-    )
     if watchlist is None:
-        watchlist = Watchlist(owner_user_id=user_id, name="My Picks", is_default=True)
-        db.add(watchlist)
-        db.commit()
-        db.refresh(watchlist)
-    return watchlist
+        watchlist = get_default_watchlist(db, current_user.id)
+    return _watchlist_response(db, watchlist)
+
+
+@router.delete("/lists/{list_id}/titles/{title_id}", response_model=WatchlistResponse)
+def remove_title_from_list(list_id: UUID, title_id: UUID, current_user: CurrentUser, db: DbSession) -> WatchlistResponse:
+    watchlist = get_watchlist_record(db, current_user.id, list_id)
+    item = db.scalar(
+        select(WatchlistItem).where(
+            WatchlistItem.watchlist_id == watchlist.id,
+            WatchlistItem.content_title_id == title_id,
+        )
+    )
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not in list")
+    db.execute(delete(WatchlistItem).where(WatchlistItem.id == item.id))
+    db.commit()
+    return _watchlist_response(db, watchlist)
+
+
+def _watchlist_response(db: DbSession, watchlist: Watchlist) -> WatchlistResponse:
+    items = db.scalars(
+        select(WatchlistItem).where(WatchlistItem.watchlist_id == watchlist.id).order_by(WatchlistItem.created_at.desc())
+    ).all()
+    titles = {
+        title.id: title
+        for title in db.scalars(
+            select(ContentTitle).where(ContentTitle.id.in_([item.content_title_id for item in items]))
+        ).all()
+    }
+    return WatchlistResponse(
+        id=watchlist.id,
+        name=watchlist.name,
+        description=watchlist.description,
+        is_default=watchlist.is_default,
+        is_system_list=watchlist.is_system_list,
+        items=[
+            WatchlistItemResponse(
+                id=item.id,
+                content_title_id=item.content_title_id,
+                added_via=item.added_via,
+                created_at=item.created_at,
+                title=_title_response(titles[item.content_title_id]),
+            )
+            for item in items
+            if item.content_title_id in titles
+        ],
+    )
+
+
+def _log_watchlist_to_teams(
+    db: DbSession,
+    user_id: UUID,
+    title: ContentTitle,
+    list_name: str,
+    added_via: str,
+    entity_id: UUID,
+) -> None:
+    team_ids = db.scalars(
+        select(TeamMember.team_id)
+        .join(Team, Team.id == TeamMember.team_id)
+        .where(
+            TeamMember.user_id == user_id,
+            TeamMember.status == "active",
+            Team.archived_at.is_(None),
+        )
+    ).all()
+    for team_id in team_ids:
+        log_team_activity(
+            db,
+            team_id=team_id,
+            actor_user_id=user_id,
+            activity_type="watchlist_item_added",
+            content_title_id=title.id,
+            entity_id=entity_id,
+            payload={
+                "title_name": title.title,
+                "content_type": title.content_type,
+                "list_name": list_name,
+                "added_via": added_via,
+            },
+        )
+        create_feed_event(
+            db,
+            actor_user_id=user_id,
+            team_id=team_id,
+            content_title_id=title.id,
+            event_type="watchlist_item_added",
+            source_type="watchlist_item",
+            source_id=entity_id,
+            payload={
+                "title_name": title.title,
+                "content_type": title.content_type,
+                "list_name": list_name,
+                "added_via": added_via,
+                "cta": "add_to_watchlist",
+            },
+        )
 
 
 def _title_response(title: ContentTitle) -> TitleResponse:

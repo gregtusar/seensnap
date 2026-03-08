@@ -68,24 +68,56 @@ def _build_queries(title: str, year: int | None, content_type: str) -> list[str]
     return queries
 
 
-def _score_candidate(candidate_title: str, search_title: str, year: int | None, content_type: str) -> float:
+def _is_generic_non_entertainment(candidate_title: str, snippet: str, content_type: str) -> bool:
+    text = f"{candidate_title} {snippet}".lower()
+    generic_markers = ["disambiguation", "emotion", "state of being", "concept", "term may refer to"]
+    if any(marker in text for marker in generic_markers):
+        return True
+    if content_type == "movie" and not any(marker in text for marker in ["film", "movie", "motion picture"]):
+        return False
+    if content_type != "movie" and not any(marker in text for marker in ["television", "tv series", "series", "miniseries"]):
+        if any(marker in text for marker in ["emotion", "concept", "feeling"]):
+            return True
+    return False
+
+
+def _score_candidate(
+    candidate_title: str,
+    candidate_snippet: str,
+    search_title: str,
+    year: int | None,
+    content_type: str,
+) -> float:
     score = 0.0
     c_norm = _normalize(candidate_title)
     s_norm = _normalize(_strip_disambiguation_suffix(search_title))
+    snippet = re.sub(r"<[^>]+>", " ", candidate_snippet or "").lower()
     if c_norm == s_norm:
         score += 8.0
     if s_norm in c_norm:
         score += 3.0
     if year and str(year) in candidate_title:
         score += 2.0
+    if year and str(year) in snippet:
+        score += 1.0
     if content_type == "movie" and "film" in candidate_title.lower():
         score += 1.5
+    if content_type == "movie" and any(term in snippet for term in ["film", "movie", "motion picture"]):
+        score += 1.3
     if content_type != "movie" and ("television" in candidate_title.lower() or "series" in candidate_title.lower()):
         score += 1.5
+    if content_type != "movie" and any(term in snippet for term in ["television", "tv series", "series", "miniseries"]):
+        score += 1.3
+    if content_type != "movie" and any(term in candidate_title.lower() for term in ["(tv series)", "(television series)", "(american tv series)", "(american television series)"]):
+        score += 2.0
+    if content_type == "movie" and re.search(r"\(\d{4}\s+film\)", candidate_title.lower()):
+        score += 1.8
     if "disambiguation" in candidate_title.lower():
         score -= 4.0
     if "list of" in candidate_title.lower():
         score -= 3.0
+    if _is_generic_non_entertainment(candidate_title, snippet, content_type):
+        score -= 6.0
     return score
 
 
@@ -204,7 +236,13 @@ def resolve_wikipedia_metadata(
             )
             search.raise_for_status()
             for candidate in search.json().get("query", {}).get("search", []):
-                score = _score_candidate(candidate.get("title", ""), title, year, content_type)
+                score = _score_candidate(
+                    candidate.get("title", ""),
+                    candidate.get("snippet", ""),
+                    title,
+                    year,
+                    content_type,
+                )
                 if score > best_score:
                     best_score = score
                     best_page = candidate

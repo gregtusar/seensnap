@@ -24,6 +24,7 @@ class FeedEventResponse(BaseModel):
     reaction_counts: dict[str, int] = Field(default_factory=dict)
     comment_count: int = 0
     my_reaction: str | None = None
+    can_delete: bool = False
     created_at: datetime
 
 
@@ -43,6 +44,7 @@ class FeedCommentResponse(BaseModel):
     avatar_url: str | None = None
     body: str
     parent_comment_id: UUID | None = None
+    can_delete: bool = False
     created_at: datetime
 
 
