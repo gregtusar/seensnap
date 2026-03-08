@@ -17,6 +17,15 @@ class TitleResponse(BaseModel):
     release_date: date | None = None
     runtime_minutes: int | None = None
     season_count: int | None = None
+    episode_count: int | None = None
+    tmdb_rating: float | None = None
+    language: str | None = None
+    country: str | None = None
+    creator: str | None = None
+    director: str | None = None
+    top_cast: list[str] = Field(default_factory=list)
+    wikipedia_url: str | None = None
+    metadata_source: str = "tmdb_fallback"
 
 
 class StreamingOptionResponse(BaseModel):

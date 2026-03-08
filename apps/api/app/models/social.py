@@ -64,9 +64,15 @@ class Team(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(120))
+    slug: Mapped[str] = mapped_column(String(140), unique=True)
+    description: Mapped[str | None] = mapped_column(String(280))
+    visibility: Mapped[str] = mapped_column(String(16), default="private")
+    icon: Mapped[str | None] = mapped_column(String(16))
+    cover_image: Mapped[str | None] = mapped_column(String(512))
     owner_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
     invite_code: Mapped[str] = mapped_column(String(32), unique=True)
     max_members: Mapped[int] = mapped_column(Integer, default=5)
+    last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -95,6 +101,70 @@ class TeamActivity(Base):
     entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TeamTitle(Base):
+    __tablename__ = "team_titles"
+    __table_args__ = (UniqueConstraint("team_id", "content_title_id", name="uq_team_title"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teams.id"))
+    content_title_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("content_titles.id"))
+    added_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    note: Mapped[str | None] = mapped_column(String(280))
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TeamRanking(Base):
+    __tablename__ = "team_rankings"
+    __table_args__ = (UniqueConstraint("team_id", "content_title_id", name="uq_team_ranking"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teams.id"))
+    content_title_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("content_titles.id"))
+    rank: Mapped[int] = mapped_column(Integer)
+    score: Mapped[float] = mapped_column(Numeric(3, 1), default=7.0)
+    movement: Mapped[str] = mapped_column(String(8), default="same")
+    weeks_on_list: Mapped[int] = mapped_column(Integer, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FeedEvent(Base):
+    __tablename__ = "feed_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    team_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("teams.id"))
+    content_title_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("content_titles.id"))
+    event_type: Mapped[str] = mapped_column(String(32))
+    source_type: Mapped[str] = mapped_column(String(32))
+    source_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FeedReaction(Base):
+    __tablename__ = "feed_reactions"
+    __table_args__ = (UniqueConstraint("event_id", "user_id", name="uq_feed_reaction_event_user"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("feed_events.id"))
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    reaction: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FeedComment(Base):
+    __tablename__ = "feed_comments"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("feed_events.id"))
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    parent_comment_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("feed_comments.id"))
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Share(Base):

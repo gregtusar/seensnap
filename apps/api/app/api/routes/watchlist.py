@@ -5,9 +5,11 @@ from sqlalchemy import delete, select
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentTitle
-from app.models.social import Watchlist, WatchlistItem
+from app.models.social import Team, TeamMember, Watchlist, WatchlistItem
 from app.schemas.content import TitleResponse
 from app.schemas.watchlist import WatchlistAddRequest, WatchlistItemResponse, WatchlistResponse
+from app.services.activity import log_team_activity
+from app.services.feed import create_feed_event
 
 router = APIRouter()
 
@@ -59,13 +61,53 @@ def add_watchlist_item(
         )
     )
     if existing is None:
-        db.add(
-            WatchlistItem(
-                watchlist_id=watchlist.id,
-                content_title_id=payload.content_title_id,
-                added_via=payload.added_via,
-            )
+        item = WatchlistItem(
+            watchlist_id=watchlist.id,
+            content_title_id=payload.content_title_id,
+            added_via=payload.added_via,
         )
+        db.add(item)
+        db.flush()
+        team_ids = db.scalars(
+            select(TeamMember.team_id)
+            .join(Team, Team.id == TeamMember.team_id)
+            .where(
+                TeamMember.user_id == current_user.id,
+                TeamMember.status == "active",
+                Team.archived_at.is_(None),
+            )
+        ).all()
+        for team_id in team_ids:
+            log_team_activity(
+                db,
+                team_id=team_id,
+                actor_user_id=current_user.id,
+                activity_type="watchlist_item_added",
+                content_title_id=title.id,
+                entity_id=item.id,
+                payload={
+                    "title_name": title.title,
+                    "content_type": title.content_type,
+                    "list_name": watchlist.name,
+                    "added_via": payload.added_via,
+                },
+            )
+            create_feed_event(
+                db,
+                actor_user_id=current_user.id,
+                team_id=team_id,
+                content_title_id=title.id,
+                event_type="watchlist_item_added",
+                source_type="watchlist_item",
+                source_id=item.id,
+                payload={
+                    "title_name": title.title,
+                    "content_type": title.content_type,
+                    "list_name": watchlist.name,
+                    "added_via": payload.added_via,
+                    "cta": "add_to_watchlist",
+                },
+            )
         db.commit()
 
     return get_watchlist(current_user, db)
@@ -97,6 +139,23 @@ def _get_or_create_watchlist(db: DbSession, user_id) -> Watchlist:
 
 
 def _title_response(title: ContentTitle) -> TitleResponse:
+    metadata = title.metadata_raw or {}
+    credits = metadata.get("credits", {}) if isinstance(metadata, dict) else {}
+    crew = credits.get("crew", []) if isinstance(credits, dict) else []
+    cast = credits.get("cast", []) if isinstance(credits, dict) else []
+    director = next(
+        (
+            person.get("name")
+            for person in crew
+            if isinstance(person, dict) and person.get("job") == "Director" and person.get("name")
+        ),
+        None,
+    )
+    top_cast = [
+        person.get("name")
+        for person in cast
+        if isinstance(person, dict) and person.get("name")
+    ][:5]
     return TitleResponse(
         id=title.id,
         tmdb_id=title.tmdb_id,
@@ -110,4 +169,8 @@ def _title_response(title: ContentTitle) -> TitleResponse:
         release_date=title.release_date,
         runtime_minutes=title.runtime_minutes,
         season_count=title.season_count,
+        tmdb_rating=float(title.tmdb_vote_average) if title.tmdb_vote_average is not None else None,
+        language=metadata.get("original_language") if isinstance(metadata, dict) else None,
+        director=director,
+        top_cast=top_cast,
     )

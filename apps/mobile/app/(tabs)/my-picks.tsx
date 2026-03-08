@@ -4,9 +4,11 @@ import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View
 import { useFocusEffect } from "@react-navigation/native";
 
 import { Screen } from "@/components/screen";
+import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, radii, spacing } from "@/constants/theme";
 import { useAuth } from "@/lib/auth";
 import { apiRequest } from "@/lib/api";
+import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 
 type WatchlistItem = {
   id: string;
@@ -46,6 +48,9 @@ export default function MyPicksScreen() {
   const [sharedByItemId, setSharedByItemId] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailTitle, setDetailTitle] = useState<UniversalTitle | null>(null);
 
   const selectedTeam = teams.find((team) => team.id === selectedTeamId) ?? teams[0] ?? null;
 
@@ -120,6 +125,23 @@ export default function MyPicksScreen() {
     }
   }
 
+  async function openDetails(item: WatchlistItem) {
+    if (!sessionToken) {
+      return;
+    }
+    setShowDetails(true);
+    setDetailLoading(true);
+    try {
+      const details = await fetchUniversalTitle(sessionToken, item.title.id, item.title);
+      setDetailTitle(details);
+    } catch (detailError) {
+      setDetailTitle(null);
+      setError(detailError instanceof Error ? detailError.message : "Failed to load title details");
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
   return (
     <Screen
       title="My Picks"
@@ -176,15 +198,19 @@ export default function MyPicksScreen() {
           return (
             <View key={item.id} style={styles.card}>
               <View style={styles.cardHeader}>
-                {item.title.poster_url ? (
-                  <Image source={{ uri: item.title.poster_url }} style={styles.posterImage} />
-                ) : (
-                  <View style={styles.posterStub}>
-                    <Ionicons name="film" color={colors.accent} size={18} />
-                  </View>
-                )}
+                <Pressable onPress={() => void openDetails(item)}>
+                  {item.title.poster_url ? (
+                    <Image source={{ uri: item.title.poster_url }} style={styles.posterImage} />
+                  ) : (
+                    <View style={styles.posterStub}>
+                      <Ionicons name="film" color={colors.accent} size={18} />
+                    </View>
+                  )}
+                </Pressable>
                 <View style={styles.cardCopy}>
-                  <Text style={styles.title}>{item.title.title}</Text>
+                  <Pressable onPress={() => void openDetails(item)}>
+                    <Text style={styles.title}>{item.title.title}</Text>
+                  </Pressable>
                   <Text style={styles.meta}>{item.title.content_type}</Text>
                 </View>
                 <View style={styles.rankBox}>
@@ -220,6 +246,18 @@ export default function MyPicksScreen() {
           );
         })}
       </ScrollView>
+      <UniversalTitleModal
+        visible={showDetails}
+        loading={detailLoading}
+        title={detailTitle}
+        onClose={() => setShowDetails(false)}
+        onSave={() => {
+          setShowDetails(false);
+        }}
+        onPost={() => {
+          setShowDetails(false);
+        }}
+      />
     </Screen>
   );
 }

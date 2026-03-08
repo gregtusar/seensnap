@@ -118,7 +118,7 @@ def search_titles(db: Session, query: str) -> list[ContentTitle]:
 def refresh_title_details(db: Session, title: ContentTitle) -> ContentTitle:
     endpoint = f"/movie/{title.tmdb_id}" if title.content_type == "movie" else f"/tv/{title.tmdb_id}"
     with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
-        response = client.get(endpoint, params={"language": "en-US"})
+        response = client.get(endpoint, params={"language": "en-US", "append_to_response": "credits"})
         response.raise_for_status()
     refreshed = _upsert_title_from_tmdb_result(db, response.json())
     db.commit()
@@ -166,4 +166,3 @@ def refresh_streaming_options(db: Session, title: ContentTitle) -> list[ContentA
 
     db.commit()
     return created
-

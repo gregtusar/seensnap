@@ -1,21 +1,27 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
+  Animated,
   Image,
-  ImageBackground,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   Pressable,
+  SafeAreaView,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
 } from "react-native";
 
-import { Screen } from "@/components/screen";
-import { colors, radii, spacing } from "@/constants/theme";
-import { useAuth } from "@/lib/auth";
 import { apiRequest } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { colors, radii, spacing } from "@/constants/theme";
+import { AddToTeamSheet } from "@/components/add-to-team-sheet";
+import { UniversalTitleModal } from "@/components/universal-title-modal";
+import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 
 type Title = {
   id: string;
@@ -24,8 +30,17 @@ type Title = {
   title: string;
   overview?: string | null;
   poster_url?: string | null;
+  backdrop_url?: string | null;
   genres: string[];
   release_date?: string | null;
+  runtime_minutes?: number | null;
+  season_count?: number | null;
+  tmdb_rating?: number | null;
+  language?: string | null;
+  director?: string | null;
+  top_cast?: string[];
+  wikipedia_url?: string | null;
+  metadata_source?: string;
 };
 
 type WatchlistItem = {
@@ -39,50 +54,121 @@ type WatchlistResponse = {
   items: WatchlistItem[];
 };
 
+type FeedEvent = {
+  id: string;
+  title?: Title | null;
+  payload: Record<string, unknown>;
+};
+
+const SAVE_LISTS = ["My Picks", "Favorites", "Watch Soon", "Date Night", "Sci-Fi", "New List"] as const;
+
 export default function HomeScreen() {
   const { sessionToken, user } = useAuth();
-  const [query, setQuery] = useState("Breaking Bad");
+  const [query, setQuery] = useState("");
   const [results, setResults] = useState<Title[]>([]);
+  const [recommendedSource, setRecommendedSource] = useState<FeedEvent[]>([]);
+  const [recommendedVisibleCount, setRecommendedVisibleCount] = useState(8);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const [selectedTitle, setSelectedTitle] = useState<Title | null>(null);
+  const [showSaveSheet, setShowSaveSheet] = useState(false);
+  const [showPostComposer, setShowPostComposer] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [universalTitle, setUniversalTitle] = useState<UniversalTitle | null>(null);
+  const [showAddToTeam, setShowAddToTeam] = useState(false);
+  const [addToTeamTitle, setAddToTeamTitle] = useState<{ id: string; title: string } | null>(null);
+  const [composeCaption, setComposeCaption] = useState("");
+  const [composeRating, setComposeRating] = useState("");
+  const [shareToTeam, setShareToTeam] = useState(false);
+  const [composerViewportHeight, setComposerViewportHeight] = useState<number | null>(null);
+  const [isPosting, setIsPosting] = useState(false);
+
+  const rootScrollRef = useRef<ScrollView>(null);
+  const composerScrollRef = useRef<ScrollView>(null);
+  const searchPulse = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    async function loadWatchlist() {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(searchPulse, { toValue: 1.06, duration: 900, useNativeDriver: true }),
+        Animated.timing(searchPulse, { toValue: 1, duration: 900, useNativeDriver: true }),
+      ])
+    ).start();
+  }, [searchPulse]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web") {
+      return;
+    }
+    const win = globalThis as any;
+    const vv = win.visualViewport;
+    if (!vv) {
+      return;
+    }
+    const handleResize = () => setComposerViewportHeight(vv.height);
+    setComposerViewportHeight(vv.height);
+    vv.addEventListener("resize", handleResize);
+    return () => vv.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+    const timer = setTimeout(() => setToast(null), 1600);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  useEffect(() => {
+    async function loadHome() {
       if (!sessionToken) {
         return;
       }
-
+      setError(null);
       try {
-        const watchlist = await apiRequest<WatchlistResponse>("/me/watchlist", { token: sessionToken });
+        const [watchlist, forYou] = await Promise.all([
+          apiRequest<WatchlistResponse>("/me/watchlist", { token: sessionToken }),
+          apiRequest<FeedEvent[]>("/feed/for-you?limit=100", { token: sessionToken }),
+        ]);
         setSavedIds(new Set(watchlist.items.map((item) => item.content_title_id)));
-      } catch (watchlistError) {
-        setError(watchlistError instanceof Error ? watchlistError.message : "Failed to load watchlist");
+        setRecommendedSource(forYou);
+      } catch (loadError) {
+        setError(loadError instanceof Error ? loadError.message : "Failed to load home");
       }
     }
-
-    void loadWatchlist();
+    void loadHome();
   }, [sessionToken]);
 
-  async function search() {
-    if (!query.trim() || !sessionToken) {
+  useEffect(() => {
+    if (!sessionToken) {
       return;
     }
-    setIsSearching(true);
-    setError(null);
-    try {
-      const titles = await apiRequest<Title[]>(`/titles/search?q=${encodeURIComponent(query)}`, {
-        token: sessionToken,
-      });
-      setResults(titles);
-    } catch (searchError) {
-      setError(searchError instanceof Error ? searchError.message : "Search failed");
-    } finally {
-      setIsSearching(false);
+    if (query.trim().length < 3) {
+      setResults([]);
+      return;
     }
-  }
+    const timer = setTimeout(async () => {
+      setIsSearching(true);
+      setError(null);
+      try {
+        const data = await apiRequest<Title[]>(`/titles/search?q=${encodeURIComponent(query.trim())}`, {
+          token: sessionToken,
+        });
+        setResults(data);
+      } catch (searchError) {
+        setError(searchError instanceof Error ? searchError.message : "Search failed");
+      } finally {
+        setIsSearching(false);
+      }
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [query, sessionToken]);
 
-  async function addToWatchlist(titleId: string) {
+  async function quickSave(title: Title, listName = "My Picks") {
     if (!sessionToken) {
       return;
     }
@@ -90,381 +176,569 @@ export default function HomeScreen() {
       const watchlist = await apiRequest<WatchlistResponse>("/me/watchlist/items", {
         method: "POST",
         token: sessionToken,
-        body: JSON.stringify({ content_title_id: titleId, added_via: "search" }),
+        body: JSON.stringify({ content_title_id: title.id, added_via: "home_v2" }),
       });
       setSavedIds(new Set(watchlist.items.map((item) => item.content_title_id)));
-    } catch (watchlistError) {
-      setError(watchlistError instanceof Error ? watchlistError.message : "Failed to save title");
+      setToast(listName === "My Picks" ? "Saved to My Picks" : `Saved to ${listName}`);
+      setShowSaveSheet(false);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Save failed");
     }
   }
 
+  async function openDetails(title: Title) {
+    if (!sessionToken) {
+      return;
+    }
+    setSelectedTitle(title);
+    setShowDetails(true);
+    setDetailLoading(true);
+    try {
+      const universal = await fetchUniversalTitle(sessionToken, title.id, title);
+      setUniversalTitle(universal);
+    } catch (detailError) {
+      setUniversalTitle(null);
+      setError(detailError instanceof Error ? detailError.message : "Failed to load full details");
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  function openComposer(title: Title) {
+    setSelectedTitle(title);
+    setComposeCaption("");
+    setComposeRating(title.tmdb_rating ? `${Math.round(title.tmdb_rating)}` : "");
+    setShareToTeam(false);
+    setShowPostComposer(true);
+  }
+
+  function openAddToTeam(title: Title) {
+    setAddToTeamTitle({ id: title.id, title: title.title });
+    setShowAddToTeam(true);
+  }
+
+  async function postToSocialWall() {
+    if (!sessionToken || !selectedTitle || isPosting) {
+      return;
+    }
+    setIsPosting(true);
+    try {
+      const event = await apiRequest<FeedEvent>("/feed/wall-posts", {
+        method: "POST",
+        token: sessionToken,
+        body: JSON.stringify({
+          content_title_id: selectedTitle.id,
+          caption: composeCaption.trim() || null,
+          rating: composeRating ? Number(composeRating) : null,
+          share_to_team_id: null,
+        }),
+      });
+      setRecommendedSource((prev) => [event, ...prev]);
+      setShowPostComposer(false);
+      setToast("Posted to your Social Wall");
+    } catch (postError) {
+      setError(postError instanceof Error ? postError.message : "Post failed");
+    } finally {
+      setIsPosting(false);
+    }
+  }
+
+  const recommendedTitles = useMemo(() => {
+    const deduped = new Map<string, Title>();
+    for (const event of recommendedSource) {
+      if (event.title && !deduped.has(event.title.id)) {
+        deduped.set(event.title.id, event.title);
+      }
+    }
+    return Array.from(deduped.values()).slice(0, recommendedVisibleCount);
+  }, [recommendedSource, recommendedVisibleCount]);
+
+  const showSearchPrompt = query.trim().length < 3;
+  const showNoResults = query.trim().length >= 3 && !isSearching && results.length === 0;
+  const composerMaxHeight = composerViewportHeight ? Math.floor(composerViewportHeight * 0.88) : undefined;
+
   return (
-    <Screen
-      title="Home"
-      subtitle="Identify titles fast, save them to My Picks, and keep your next watch close."
-    >
-      <ScrollView contentContainerStyle={styles.results}>
-        <View style={styles.heroCard}>
-          <View style={styles.heroTopRow}>
-            <View>
-              <Text style={styles.heroEyebrow}>Tonight's queue</Text>
-              <Text style={styles.heroTitle}>Add snaps to your team</Text>
-            </View>
-            <View style={styles.heroBadge}>
-              <Ionicons name="sparkles" color={colors.background} size={16} />
-              <Text style={styles.heroBadgeText}>Live</Text>
-            </View>
-          </View>
-          <ImageBackground
-            imageStyle={styles.posterFrameImage}
-            source={results[0]?.poster_url ? { uri: results[0].poster_url } : undefined}
-            style={styles.posterFrame}
-          >
-            <View style={styles.posterFrameOverlay}>
-              <Text style={styles.posterTitle}>{results[0]?.title ?? "Skyfall"}</Text>
-              <Text style={styles.posterMeta}>Point. Snip. Identify. Share.</Text>
-            </View>
-          </ImageBackground>
-          <View style={styles.quickActions}>
-            <View style={styles.quickAction}>
-              <Ionicons name="camera" color={colors.accent} size={18} />
-              <Text style={styles.quickActionLabel}>Identify</Text>
-            </View>
-            <View style={styles.quickAction}>
-              <Ionicons name="star" color={colors.ink} size={18} />
-              <Text style={styles.quickActionLabel}>Top 10</Text>
-            </View>
-            <View style={styles.quickAction}>
-              <Ionicons name="disc" color={colors.ink} size={18} />
-              <Text style={styles.quickActionLabel}>Watchlist</Text>
-            </View>
-            <View style={styles.quickAction}>
-              <Ionicons name="help" color={colors.ink} size={18} />
-              <Text style={styles.quickActionLabel}>Quiz</Text>
-            </View>
-          </View>
-          <Pressable style={styles.ctaBar}>
-            <Ionicons name="flash" color={colors.accent} size={18} />
-            <Text style={styles.ctaText}>Add snips to your watch team</Text>
-            <Ionicons name="chevron-forward" color={colors.muted} size={18} />
+    <SafeAreaView style={styles.safeArea}>
+      <View style={styles.pageGlow} />
+      <ScrollView
+        ref={rootScrollRef}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={styles.content}
+      >
+        <View style={styles.hero}>
+          <View style={styles.logoGlow} />
+          <Image source={require("../../assets/branding/seensnap-logo.png")} style={styles.logo} resizeMode="contain" />
+          <Pressable style={styles.bellButton}>
+            <Ionicons name="notifications-outline" size={19} color={colors.ink} />
           </Pressable>
+          <Text style={styles.heroTitle}>{`Welcome back, ${user?.display_name?.split(" ")[0] ?? "Elizabeth"}.`}</Text>
+          <Text style={styles.heroSubtitle}>Your next favorite show is one tap away.</Text>
         </View>
 
-        <View style={styles.searchCard}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Search TMDB</Text>
-            <Text style={styles.sectionMeta}>{user?.display_name ?? "SeenSnap user"}</Text>
+        <View style={styles.searchModule}>
+          <View style={styles.searchBar}>
+            <Animated.View style={{ transform: [{ scale: searchPulse }] }}>
+              <Ionicons name="search" size={18} color={colors.muted} />
+            </Animated.View>
+            <TextInput
+              value={query}
+              onChangeText={setQuery}
+              onFocus={() => {
+                rootScrollRef.current?.scrollTo({ y: 220, animated: true });
+                if (Platform.OS === "web") {
+                  const el = globalThis.document?.activeElement as HTMLElement | null;
+                  el?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+                }
+              }}
+              autoCapitalize="words"
+              placeholder="Search for a movie or show"
+              placeholderTextColor={colors.muted}
+              style={styles.searchInput}
+            />
           </View>
-          <TextInput
-            autoCapitalize="words"
-            onChangeText={setQuery}
-            onSubmitEditing={() => void search()}
-            placeholder="Search movies or series"
-            placeholderTextColor={colors.muted}
-            style={styles.input}
-            value={query}
-          />
-          <Pressable onPress={() => void search()} style={styles.primaryButton}>
-            <Text style={styles.primaryButtonLabel}>{isSearching ? "Searching..." : "Search titles"}</Text>
-          </Pressable>
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+          <Text style={styles.searchSubtext}>Powered by TMDB</Text>
         </View>
 
-        <View style={styles.rowHeader}>
-          <Text style={styles.sectionTitle}>Recommended for you</Text>
-          <Text style={styles.rowMeta}>{results.length} results</Text>
-        </View>
-        {isSearching ? <ActivityIndicator color={colors.accent} /> : null}
+        {showSearchPrompt ? (
+          <View style={styles.promptCard}>
+            <Ionicons name="film-outline" size={17} color={colors.muted} />
+            <Text style={styles.promptText}>Start by searching for a title you love.</Text>
+          </View>
+        ) : null}
+        {showNoResults ? <Text style={styles.infoText}>No exact matches found. Try another title.</Text> : null}
+        {isSearching ? <Text style={styles.infoText}>Searching...</Text> : null}
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
         {results.map((title) => (
           <View key={title.id} style={styles.resultCard}>
-            <View style={styles.resultHeader}>
-              {title.poster_url ? (
-                <Image source={{ uri: title.poster_url }} style={styles.posterImage} />
-              ) : (
-                <View style={styles.posterStub}>
-                  <Text style={styles.posterStubType}>{title.content_type.slice(0, 1).toUpperCase()}</Text>
-                </View>
-              )}
-              <View style={styles.resultCopy}>
-                <Text style={styles.resultTitle}>{title.title}</Text>
-                <Text style={styles.resultMeta}>{title.content_type}</Text>
-                <Text style={styles.resultGenres}>{title.genres.join(" • ") || "Genres unavailable"}</Text>
-              </View>
-              <View style={styles.rankBox}>
-                <Text style={styles.rankValue}>{savedIds.has(title.id) ? "OK" : "8.0"}</Text>
+            {title.poster_url ? (
+              <Image source={{ uri: title.poster_url }} style={styles.resultPoster} />
+            ) : (
+              <View style={styles.resultPosterFallback} />
+            )}
+            <View style={styles.resultBody}>
+              <Text style={styles.resultTitle}>{title.title}</Text>
+              <Text style={styles.resultMeta}>
+                {(title.release_date ? `${new Date(title.release_date).getFullYear()} · ` : "") +
+                  (title.genres[0] ? `${title.genres[0]} · ` : "") +
+                  (title.content_type === "movie"
+                    ? `${title.runtime_minutes ?? "—"} min`
+                    : `${title.season_count ?? "—"} seasons`)}
+              </Text>
+              <View style={styles.actionRow}>
+                <Pressable
+                  onPress={() => void quickSave(title)}
+                  onLongPress={() => {
+                    setSelectedTitle(title);
+                    setShowSaveSheet(true);
+                  }}
+                  style={({ pressed }) => [
+                    styles.actionPill,
+                    savedIds.has(title.id) && styles.actionPillSaved,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Ionicons
+                    name={savedIds.has(title.id) ? "bookmark" : "bookmark-outline"}
+                    size={14}
+                    color={savedIds.has(title.id) ? colors.accent : colors.ink}
+                  />
+                  <Text style={styles.actionLabel}>Save</Text>
+                </Pressable>
+                <Pressable onPress={() => openComposer(title)} style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}>
+                  <Ionicons name="share-social-outline" size={14} color={colors.ink} />
+                  <Text style={styles.actionLabel}>Post</Text>
+                </Pressable>
+                <Pressable onPress={() => openAddToTeam(title)} style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}>
+                  <Ionicons name="people-outline" size={14} color={colors.ink} />
+                  <Text style={styles.actionLabel}>Team</Text>
+                </Pressable>
+                <Pressable onPress={() => void openDetails(title)} style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}>
+                  <Ionicons name="information-circle-outline" size={14} color={colors.ink} />
+                  <Text style={styles.actionLabel}>Details</Text>
+                </Pressable>
               </View>
             </View>
-            <Text numberOfLines={3} style={styles.resultBody}>
-              {title.overview || "No overview available yet."}
-            </Text>
-            <Pressable
-              disabled={savedIds.has(title.id)}
-              onPress={() => void addToWatchlist(title.id)}
-              style={({ pressed }) => [
-                styles.secondaryButton,
-                savedIds.has(title.id) && styles.secondaryButtonDisabled,
-                pressed && !savedIds.has(title.id) && styles.secondaryButtonPressed,
-              ]}
-            >
-              <Text style={styles.secondaryButtonLabel}>
-                {savedIds.has(title.id) ? "Saved to My Picks" : "Add to My Picks"}
-              </Text>
-            </Pressable>
           </View>
         ))}
+
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Recommended for You</Text>
+          <Text style={styles.sectionSub}>Based on your saved picks and lists.</Text>
+        </View>
+        <ScrollView
+          horizontal
+          keyboardShouldPersistTaps="handled"
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.recommendationRow}
+          onScroll={({ nativeEvent }) => {
+            const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
+            if (layoutMeasurement.width + contentOffset.x >= contentSize.width - 60) {
+              setRecommendedVisibleCount((prev) => Math.min(prev + 6, 60));
+            }
+          }}
+          scrollEventThrottle={16}
+        >
+          {recommendedTitles.map((title) => (
+            <View key={title.id} style={styles.recommendationCard}>
+              {title.poster_url ? (
+                <Image source={{ uri: title.poster_url }} style={styles.recommendationPoster} />
+              ) : (
+                <View style={styles.recommendationPosterFallback} />
+              )}
+              <Text numberOfLines={1} style={styles.recommendationTitle}>{title.title}</Text>
+              <Text numberOfLines={2} style={styles.recommendationMeta}>
+                {(title.release_date ? `${new Date(title.release_date).getFullYear()} · ` : "") +
+                  (title.genres[0] ? `${title.genres[0]} · ` : "") +
+                  (title.content_type === "movie"
+                    ? `${title.runtime_minutes ?? "—"} min`
+                    : `${title.season_count ?? "—"} seasons`)}
+              </Text>
+              <View style={styles.actionRow}>
+                <Pressable
+                  onPress={() => void quickSave(title)}
+                  onLongPress={() => {
+                    setSelectedTitle(title);
+                    setShowSaveSheet(true);
+                  }}
+                  style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}
+                >
+                  <Ionicons name="bookmark-outline" size={14} color={colors.ink} />
+                  <Text style={styles.actionLabel}>Save</Text>
+                </Pressable>
+                <Pressable onPress={() => openComposer(title)} style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}>
+                  <Ionicons name="share-social-outline" size={14} color={colors.ink} />
+                  <Text style={styles.actionLabel}>Share</Text>
+                </Pressable>
+                <Pressable onPress={() => openAddToTeam(title)} style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}>
+                  <Ionicons name="people-outline" size={14} color={colors.ink} />
+                  <Text style={styles.actionLabel}>Team</Text>
+                </Pressable>
+                <Pressable onPress={() => void openDetails(title)} style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}>
+                  <Ionicons name="information-circle-outline" size={14} color={colors.ink} />
+                  <Text style={styles.actionLabel}>Details</Text>
+                </Pressable>
+              </View>
+            </View>
+          ))}
+        </ScrollView>
       </ScrollView>
-    </Screen>
+
+      <Modal transparent visible={showSaveSheet} animationType="slide" onRequestClose={() => setShowSaveSheet(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setShowSaveSheet(false)} />
+        <View style={styles.sheet}>
+          <Text style={styles.sheetTitle}>Save to a List</Text>
+          {SAVE_LISTS.map((name) => (
+            <Pressable key={name} style={styles.sheetButton} onPress={() => selectedTitle && void quickSave(selectedTitle, name)}>
+              <Text style={styles.sheetButtonLabel}>{name}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </Modal>
+
+      <Modal transparent visible={showPostComposer} animationType="slide" onRequestClose={() => setShowPostComposer(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setShowPostComposer(false)} />
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 18 : 0}
+          style={styles.composerWrap}
+        >
+          <View style={[styles.sheet, composerMaxHeight ? { maxHeight: composerMaxHeight } : null]}>
+            <Text style={styles.sheetTitle}>Post to Social Wall</Text>
+            <ScrollView
+              ref={composerScrollRef}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.composerScroll}
+            >
+              {selectedTitle?.poster_url ? (
+                <Image source={{ uri: selectedTitle.poster_url }} style={styles.composePoster} />
+              ) : null}
+              <Text style={styles.sheetSubTitle}>{selectedTitle?.title}</Text>
+              <Text style={styles.sheetSubTitle}>TMDB: {selectedTitle?.tmdb_rating ?? "—"}</Text>
+              <TextInput
+                value={composeCaption}
+                onChangeText={setComposeCaption}
+                onFocus={() => composerScrollRef.current?.scrollToEnd({ animated: true })}
+                placeholder="Add caption (optional)"
+                placeholderTextColor={colors.muted}
+                style={styles.textInput}
+                multiline
+              />
+              <TextInput
+                value={composeRating}
+                onChangeText={setComposeRating}
+                onFocus={() => composerScrollRef.current?.scrollToEnd({ animated: true })}
+                placeholder="Add rating (optional)"
+                keyboardType="numeric"
+                placeholderTextColor={colors.muted}
+                style={styles.textInput}
+              />
+              <View style={styles.switchRow}>
+                <Text style={styles.sheetButtonLabel}>Also share to Watch Team</Text>
+                <Switch value={shareToTeam} onValueChange={setShareToTeam} trackColor={{ true: colors.accent }} />
+              </View>
+            </ScrollView>
+            <View style={styles.composerFooter}>
+              <Pressable onPress={() => setShowPostComposer(false)} style={styles.secondaryButton}>
+                <Text style={styles.secondaryButtonLabel}>Cancel</Text>
+              </Pressable>
+              <Pressable onPress={() => void postToSocialWall()} style={styles.primaryButton}>
+                <Text style={styles.primaryButtonLabel}>{isPosting ? "Posting..." : "Post"}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <UniversalTitleModal
+        visible={showDetails}
+        loading={detailLoading}
+        title={universalTitle}
+        onClose={() => setShowDetails(false)}
+        onSave={() => {
+          if (selectedTitle) {
+            void quickSave(selectedTitle);
+          }
+        }}
+        onPost={() => {
+          if (selectedTitle) {
+            openComposer(selectedTitle);
+          }
+        }}
+        onAddToTeam={() => {
+          if (selectedTitle) {
+            openAddToTeam(selectedTitle);
+          }
+        }}
+      />
+
+      <AddToTeamSheet
+        visible={showAddToTeam}
+        token={sessionToken}
+        title={addToTeamTitle}
+        onClose={() => setShowAddToTeam(false)}
+        onAdded={(teamName) => setToast(`Added to ${teamName}`)}
+        onError={(message) => setError(message)}
+      />
+
+      {toast ? (
+        <View style={styles.toast}>
+          <Text style={styles.toastLabel}>{toast}</Text>
+        </View>
+      ) : null}
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  heroCard: {
+  safeArea: { flex: 1, backgroundColor: colors.background },
+  pageGlow: {
+    position: "absolute",
+    top: -120,
+    left: -40,
+    width: 300,
+    height: 300,
+    borderRadius: 150,
+    backgroundColor: "#1b3d67",
+    opacity: 0.22,
+  },
+  content: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: 120,
     gap: spacing.md,
+  },
+  hero: {
+    borderRadius: 22,
     padding: spacing.lg,
-    borderRadius: radii.lg,
-    backgroundColor: colors.surfaceMuted,
+    alignItems: "center",
+    backgroundColor: "rgba(11, 20, 36, 0.58)",
     borderWidth: 1,
     borderColor: colors.border,
   },
-  heroTopRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
+  logoGlow: {
+    position: "absolute",
+    top: 12,
+    width: 220,
+    height: 84,
+    borderRadius: 84,
+    backgroundColor: "rgba(244, 196, 48, 0.14)",
+  },
+  logo: { width: 182, height: 56 },
+  bellButton: {
+    position: "absolute",
+    right: 14,
+    top: 14,
+    width: 38,
+    height: 38,
+    borderRadius: 12,
     alignItems: "center",
-    gap: spacing.md,
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
   },
-  heroEyebrow: {
-    fontSize: 12,
-    color: colors.accent,
-    textTransform: "uppercase",
-    letterSpacing: 1.4,
-    fontWeight: "800",
+  heroTitle: { marginTop: 10, color: colors.ink, fontSize: 28, fontWeight: "900", textAlign: "center" },
+  heroSubtitle: { marginTop: 6, color: colors.muted, lineHeight: 21, textAlign: "center" },
+  searchModule: {
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: spacing.md,
+    gap: 8,
   },
-  heroTitle: {
-    marginTop: 4,
-    fontSize: 28,
-    lineHeight: 30,
-    color: colors.ink,
-    fontWeight: "900",
+  searchBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#3a4f6b",
+    backgroundColor: "#111f35",
+    paddingHorizontal: 14,
+    paddingVertical: 15,
+    minHeight: 54,
   },
-  heroBadge: {
+  searchInput: { flex: 1, color: colors.ink, fontSize: 16 },
+  searchSubtext: { color: colors.muted, fontSize: 12 },
+  promptCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: spacing.md,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  promptText: { color: colors.muted },
+  infoText: { color: colors.muted, fontSize: 12 },
+  errorText: { color: colors.danger, fontSize: 12 },
+  resultCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: spacing.sm,
+    flexDirection: "row",
+    gap: spacing.sm,
+  },
+  resultPoster: { width: 88, height: 132, borderRadius: 11, backgroundColor: colors.backgroundElevated },
+  resultPosterFallback: { width: 88, height: 132, borderRadius: 11, backgroundColor: colors.backgroundElevated },
+  resultBody: { flex: 1, gap: 6 },
+  resultTitle: { color: colors.ink, fontSize: 18, fontWeight: "800" },
+  resultMeta: { color: colors.muted, fontSize: 12 },
+  actionRow: { marginTop: 8, flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  actionPill: {
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.backgroundElevated,
+    paddingVertical: 7,
+    paddingHorizontal: 11,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    borderRadius: radii.pill,
-    backgroundColor: colors.accent,
+  },
+  actionPillSaved: { borderColor: colors.success },
+  actionLabel: { color: colors.ink, fontSize: 11, fontWeight: "700" },
+  pressed: { transform: [{ scale: 0.98 }], opacity: 0.9 },
+  sectionHeader: { marginTop: spacing.sm, gap: 4 },
+  sectionTitle: { color: colors.ink, fontSize: 22, fontWeight: "900" },
+  sectionSub: { color: colors.muted, fontSize: 13 },
+  recommendationRow: { gap: spacing.sm, paddingBottom: spacing.sm },
+  recommendationCard: {
+    width: 180,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: spacing.sm,
+  },
+  recommendationPoster: { width: "100%", aspectRatio: 2 / 3, borderRadius: 11, backgroundColor: colors.backgroundElevated },
+  recommendationPosterFallback: { width: "100%", aspectRatio: 2 / 3, borderRadius: 11, backgroundColor: colors.backgroundElevated },
+  recommendationTitle: { color: colors.ink, fontWeight: "800", marginTop: 8 },
+  recommendationMeta: { color: colors.muted, fontSize: 12, marginTop: 3, minHeight: 34 },
+  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(4, 9, 17, 0.72)" },
+  composerWrap: { flex: 1, justifyContent: "flex-end" },
+  sheet: {
+    marginTop: "auto",
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: spacing.lg,
+    gap: spacing.sm,
+    paddingBottom: Platform.OS === "ios" ? 28 : 16,
+  },
+  detailsSheet: { maxHeight: "88%" },
+  sheetTitle: { color: colors.ink, fontSize: 21, fontWeight: "900" },
+  sheetSubTitle: { color: colors.muted, fontSize: 13 },
+  sheetButton: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.backgroundElevated,
+    paddingVertical: 12,
     paddingHorizontal: 12,
-    paddingVertical: 8,
   },
-  heroBadgeText: {
-    color: colors.background,
-    fontWeight: "800",
-  },
-  posterFrame: {
-    minHeight: 170,
-    justifyContent: "flex-end",
-    borderRadius: radii.md,
-    backgroundColor: colors.backgroundElevated,
+  sheetButtonLabel: { color: colors.ink, fontWeight: "700" },
+  composePoster: { width: 72, height: 108, borderRadius: 10, backgroundColor: colors.backgroundElevated },
+  composerScroll: { gap: spacing.sm, paddingBottom: spacing.md },
+  textInput: {
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#284566",
-    overflow: "hidden",
-  },
-  posterFrameImage: {
-    resizeMode: "cover",
-  },
-  posterFrameOverlay: {
-    minHeight: 170,
-    justifyContent: "flex-end",
-    padding: spacing.lg,
-    backgroundColor: "rgba(9, 16, 28, 0.44)",
-  },
-  posterTitle: {
-    fontSize: 34,
-    color: colors.accent,
-    fontWeight: "900",
-  },
-  posterMeta: {
+    borderColor: colors.border,
+    backgroundColor: colors.backgroundElevated,
     color: colors.ink,
-    marginTop: 6,
-  },
-  quickActions: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: spacing.sm,
-  },
-  quickAction: {
-    flex: 1,
-    alignItems: "center",
-    gap: 8,
+    paddingHorizontal: 12,
     paddingVertical: 10,
-    borderRadius: radii.md,
-    backgroundColor: "rgba(27, 42, 68, 0.85)",
   },
-  quickActionLabel: {
-    color: colors.ink,
-    fontSize: 12,
-    fontWeight: "700",
+  switchRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  composerFooter: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: spacing.sm,
+    gap: spacing.xs,
   },
-  ctaBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderRadius: radii.md,
-    backgroundColor: "#0f1b2d",
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  ctaText: {
-    flex: 1,
-    color: colors.ink,
-    fontWeight: "700",
-  },
-  searchCard: {
-    gap: spacing.sm,
-    padding: spacing.lg,
-    borderRadius: radii.md,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  sectionHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: spacing.sm,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: colors.ink,
-  },
-  sectionMeta: {
-    color: colors.accent,
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  input: {
-    borderRadius: radii.sm,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.background,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    color: colors.ink,
-  },
+  detailBackdrop: { width: "100%", aspectRatio: 16 / 9, borderRadius: 14, marginBottom: spacing.sm },
+  detailMeta: { color: colors.muted, lineHeight: 20 },
+  detailCopy: { color: colors.ink, marginTop: 6, lineHeight: 21 },
   primaryButton: {
-    borderRadius: radii.pill,
+    borderRadius: 14,
     backgroundColor: colors.accent,
-    paddingVertical: 14,
-  },
-  primaryButtonLabel: {
-    textAlign: "center",
-    color: colors.background,
-    fontWeight: "800",
-    fontSize: 15,
-  },
-  error: {
-    color: colors.danger,
-    fontSize: 14,
-  },
-  results: {
-    gap: spacing.md,
-    paddingBottom: 32,
-  },
-  rowHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: spacing.sm,
-  },
-  rowMeta: {
-    color: colors.muted,
-    fontSize: 12,
-  },
-  resultCard: {
-    gap: spacing.sm,
-    padding: spacing.lg,
-    borderRadius: radii.md,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  resultHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-  },
-  posterImage: {
-    width: 56,
-    height: 72,
-    borderRadius: 16,
-    backgroundColor: colors.backgroundElevated,
-  },
-  posterStub: {
-    width: 56,
-    height: 72,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.backgroundElevated,
-  },
-  posterStubType: {
-    color: colors.accent,
-    fontSize: 22,
-    fontWeight: "900",
-  },
-  resultCopy: {
-    flex: 1,
-  },
-  resultTitle: {
-    fontSize: 19,
-    fontWeight: "800",
-    color: colors.ink,
-  },
-  resultMeta: {
-    textTransform: "capitalize",
-    color: colors.accent,
-    fontWeight: "700",
-  },
-  rankBox: {
-    minWidth: 54,
-    borderRadius: 16,
-    paddingHorizontal: 10,
     paddingVertical: 12,
-    backgroundColor: colors.accent,
     alignItems: "center",
   },
-  rankValue: {
-    color: colors.background,
-    fontWeight: "900",
-    fontSize: 18,
-  },
-  resultBody: {
-    color: colors.muted,
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  resultGenres: {
-    color: colors.muted,
-    fontSize: 13,
-  },
+  primaryButtonLabel: { color: colors.background, fontWeight: "800" },
   secondaryButton: {
-    borderRadius: radii.pill,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: colors.accent,
     paddingVertical: 12,
+    alignItems: "center",
   },
-  secondaryButtonPressed: {
-    opacity: 0.85,
-  },
-  secondaryButtonDisabled: {
+  secondaryButtonLabel: { color: colors.accent, fontWeight: "800" },
+  tertiaryButton: {
+    borderRadius: 14,
+    borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.backgroundElevated,
+    paddingVertical: 12,
+    alignItems: "center",
   },
-  secondaryButtonLabel: {
-    textAlign: "center",
-    color: colors.ink,
-    fontWeight: "800",
+  tertiaryButtonLabel: { color: colors.ink, fontWeight: "700" },
+  toast: {
+    position: "absolute",
+    left: spacing.lg,
+    right: spacing.lg,
+    bottom: 88,
+    borderRadius: 14,
+    backgroundColor: "rgba(46, 196, 182, 0.96)",
+    paddingVertical: 12,
+    paddingHorizontal: 12,
   },
+  toastLabel: { color: colors.background, textAlign: "center", fontWeight: "800" },
 });

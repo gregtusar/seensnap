@@ -45,3 +45,9 @@ def list_activity_actor_profiles(db: Session, activities: list[TeamActivity]) ->
 
     profiles = db.scalars(select(UserProfile).where(UserProfile.user_id.in_(actor_ids))).all()
     return {profile.user_id: profile for profile in profiles}
+
+
+def get_team_activity_by_id(db: Session, team_id, activity_id) -> TeamActivity | None:
+    return db.scalar(
+        select(TeamActivity).where(TeamActivity.team_id == team_id, TeamActivity.id == activity_id)
+    )

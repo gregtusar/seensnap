@@ -7,6 +7,11 @@ class GoogleAuthRequest(BaseModel):
     id_token: str
 
 
+class DevAuthRequest(BaseModel):
+    email: str = "dev@seensnap.local"
+    display_name: str = "Local Dev"
+
+
 class SessionUserResponse(BaseModel):
     user_id: UUID
     email: str
@@ -18,4 +23,3 @@ class SessionResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: SessionUserResponse
-
