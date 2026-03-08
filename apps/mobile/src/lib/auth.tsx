@@ -34,6 +34,8 @@ type AuthContextValue = {
   signInWithGoogle: () => Promise<void>;
   signInDemo: () => Promise<void>;
   signOut: () => Promise<void>;
+  refreshSessionUser: () => Promise<void>;
+  updateSessionUser: (next: Partial<SessionUser>) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -175,6 +177,26 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setUser(null);
   };
 
+  const refreshSessionUser = async () => {
+    if (!sessionToken) {
+      return;
+    }
+    const nextUser = await apiRequest<SessionUser>("/auth/me", { token: sessionToken });
+    await SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(nextUser));
+    setUser(nextUser);
+  };
+
+  const updateSessionUser = async (next: Partial<SessionUser>) => {
+    setUser((current) => {
+      if (!current) {
+        return current;
+      }
+      const merged = { ...current, ...next };
+      void SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(merged));
+      return merged;
+    });
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -185,6 +207,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
         signInWithGoogle,
         signInDemo,
         signOut,
+        refreshSessionUser,
+        updateSessionUser,
       }}
     >
       {children}

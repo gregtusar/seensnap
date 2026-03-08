@@ -23,6 +23,7 @@ function AuthGate() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="sign-in" />
       <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="profile/[userId]" />
     </Stack>
   );
 }

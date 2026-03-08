@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
@@ -97,6 +98,7 @@ const reactionOptions: Array<{ key: ReactionKey; icon: string; label: string }> 
 
 export default function FeedScreen() {
   const { sessionToken, user } = useAuth();
+  const router = useRouter();
   const [segment, setSegment] = useState<FeedSegment>("for-you");
   const [items, setItems] = useState<FeedEvent[]>([]);
   const [commentsByEvent, setCommentsByEvent] = useState<Record<string, FeedComment[]>>({});
@@ -563,6 +565,7 @@ export default function FeedScreen() {
                 onSubmitComment={() => void postComment(item.id)}
                 onReact={(reaction) => void react(item, reaction)}
                 onToggleFollow={() => toggleFollow(item.actor.user_id)}
+                onOpenActor={() => router.push(`/profile/${item.actor.user_id}`)}
                 onOpenDetails={() => void openDetails(item)}
                 onOpenComposer={() => openComposer(item, "card")}
                 onCta={(label) => onCta(item, label)}
@@ -735,6 +738,7 @@ function FeedCard({
   onSubmitComment,
   onReact,
   onToggleFollow,
+  onOpenActor,
   onOpenDetails,
   onOpenComposer,
   onCta,
@@ -753,6 +757,7 @@ function FeedCard({
   onSubmitComment: () => void;
   onReact: (reaction: ReactionKey) => void;
   onToggleFollow: () => void;
+  onOpenActor: () => void;
   onOpenDetails: () => void;
   onOpenComposer: () => void;
   onCta: (label: string) => void;
@@ -797,11 +802,13 @@ function FeedCard({
     <View style={styles.card}>
       <View pointerEvents="none" style={styles.cardInnerGlow} />
       <View style={styles.headerRow}>
-        <Avatar uri={item.actor.avatar_url} label={item.actor.display_name ?? "U"} size={40} />
-        <View style={styles.userBlock}>
+        <Pressable onPress={onOpenActor} style={styles.actorTap}>
+          <Avatar uri={item.actor.avatar_url} label={item.actor.display_name ?? "U"} size={40} />
+        </Pressable>
+        <Pressable onPress={onOpenActor} style={styles.userBlock}>
           <Text style={styles.userName}>{item.actor.display_name ?? "SeenSnap user"}</Text>
           <Text style={styles.activityLabel}>{activityLabel}</Text>
-        </View>
+        </Pressable>
         <Text style={styles.timeText}>{relativeTime(item.created_at)}</Text>
         {!isOwnPost ? (
           <Animated.View style={{ transform: [{ scale: followScale }] }}>
@@ -1307,6 +1314,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.xs,
+  },
+  actorTap: {
+    borderRadius: radii.pill,
   },
   userBlock: {
     flex: 1,
