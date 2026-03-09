@@ -1,6 +1,7 @@
 import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { colors, radii, spacing } from "@/constants/theme";
+import { resolveMediaUrl } from "@/lib/api";
 import type { UniversalTitle } from "@/lib/universal-title";
 
 type Props = {
@@ -24,7 +25,10 @@ export function UniversalTitleModal({
   onPost,
   onAddToTeam,
 }: Props) {
-  const posterOrBackdrop = title?.backdropUrl ?? title?.posterUrl ?? null;
+  const posterOrBackdrop =
+    resolveMediaUrl(title?.backdropUrl ?? null) ??
+    resolveMediaUrl(title?.posterUrl ?? null) ??
+    resolveMediaUrl("/media/brand/title_placeholder.png");
   const metaParts: string[] = [];
   if (typeof title?.ratingTmdb === "number") {
     metaParts.push(`⭐ ${title.ratingTmdb.toFixed(1)} TMDB`);

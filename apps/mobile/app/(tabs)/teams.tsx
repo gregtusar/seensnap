@@ -21,7 +21,7 @@ import { Screen } from "@/components/screen";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, radii, spacing } from "@/constants/theme";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, resolveMediaUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 
@@ -1092,8 +1092,9 @@ function TabPill({ label, active, onPress }: { label: string; active: boolean; o
 }
 
 function Avatar({ uri, label, size }: { uri?: string | null; label: string; size: number }) {
-  if (uri) {
-    return <Image source={{ uri }} style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.surface }} />;
+  const resolved = resolveMediaUrl(uri);
+  if (resolved) {
+    return <Image source={{ uri: resolved }} style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.surface }} />;
   }
   return (
     <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.surfaceSoft, alignItems: "center", justifyContent: "center" }}>
@@ -1106,10 +1107,12 @@ function PosterThumb({ uri, small = false }: { uri?: string | null; small?: bool
   const width = small ? 26 : 40;
   const height = small ? 38 : 58;
   const [failed, setFailed] = useState(false);
-  if (uri && !failed) {
+  const resolved = resolveMediaUrl(uri);
+  const placeholder = resolveMediaUrl("/media/brand/title_placeholder.png");
+  if (!failed && (resolved || placeholder)) {
     return (
       <Image
-        source={{ uri }}
+        source={{ uri: resolved ?? placeholder! }}
         style={{ width, height, borderRadius: 6, backgroundColor: colors.backgroundElevated }}
         onError={() => setFailed(true)}
       />

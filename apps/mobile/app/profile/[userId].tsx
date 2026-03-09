@@ -15,7 +15,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, radii, spacing } from "@/constants/theme";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, resolveMediaUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 
@@ -25,6 +25,11 @@ type PublicProfile = {
   display_name: string;
   avatar_url?: string | null;
   bio?: string | null;
+  follower_count: number;
+  following_count: number;
+  post_count: number;
+  is_following: boolean;
+  can_follow: boolean;
 };
 
 type PublicPost = {
@@ -46,6 +51,7 @@ export default function PublicProfileScreen() {
   const [posts, setPosts] = useState<PublicPost[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [followBusy, setFollowBusy] = useState(false);
 
   const [showDetails, setShowDetails] = useState(false);
   const [detailTitle, setDetailTitle] = useState<UniversalTitle | null>(null);
@@ -99,6 +105,33 @@ export default function PublicProfileScreen() {
     }
   }
 
+  async function toggleFollow() {
+    if (!sessionToken || !profile || !profile.can_follow || followBusy) {
+      return;
+    }
+    const currentlyFollowing = profile.is_following;
+    setFollowBusy(true);
+    try {
+      await apiRequest<void>(`/profiles/${profile.user_id}/follow`, {
+        method: currentlyFollowing ? "DELETE" : "POST",
+        token: sessionToken,
+      });
+      setProfile((current) =>
+        current
+          ? {
+              ...current,
+              is_following: !currentlyFollowing,
+              follower_count: Math.max(current.follower_count + (currentlyFollowing ? -1 : 1), 0),
+            }
+          : current
+      );
+    } catch (followError) {
+      setError(followError instanceof Error ? followError.message : "Could not update follow");
+    } finally {
+      setFollowBusy(false);
+    }
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.content}>
@@ -118,6 +151,22 @@ export default function PublicProfileScreen() {
               <Text style={styles.name}>{profile.display_name}</Text>
               <Text style={styles.username}>@{profile.username}</Text>
               <Text style={styles.bio}>{profile.bio?.trim() ? profile.bio : "No bio yet."}</Text>
+              <View style={styles.countRow}>
+                <Text style={styles.countText}>{profile.follower_count} followers</Text>
+                <Text style={styles.countText}>{profile.following_count} following</Text>
+                <Text style={styles.countText}>{profile.post_count} posts</Text>
+              </View>
+              {profile.can_follow ? (
+                <Pressable
+                  style={[styles.followButton, profile.is_following && styles.followingButton, followBusy && styles.followDisabled]}
+                  onPress={() => void toggleFollow()}
+                  disabled={followBusy}
+                >
+                  <Text style={[styles.followButtonText, profile.is_following && styles.followingButtonText]}>
+                    {followBusy ? "..." : profile.is_following ? "Following" : "Follow"}
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
 
             <View style={styles.postsHeader}>
@@ -163,8 +212,9 @@ export default function PublicProfileScreen() {
 }
 
 function Avatar({ uri, label, size }: { uri?: string | null; label: string; size: number }) {
-  if (uri) {
-    return <Image source={{ uri }} style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.surfaceSoft }} />;
+  const resolved = resolveMediaUrl(uri);
+  if (resolved) {
+    return <Image source={{ uri: resolved }} style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.surfaceSoft }} />;
   }
   return (
     <View style={[styles.avatarFallback, { width: size, height: size, borderRadius: size / 2 }]}>
@@ -174,14 +224,15 @@ function Avatar({ uri, label, size }: { uri?: string | null; label: string; size
 }
 
 function Poster({ uri }: { uri?: string | null }) {
-  if (!uri) {
+  const resolved = resolveMediaUrl(uri);
+  if (!resolved) {
     return (
       <View style={styles.posterFallback}>
         <Ionicons name="film" size={16} color={colors.muted} />
       </View>
     );
   }
-  return <Image source={{ uri }} style={styles.poster} />;
+  return <Image source={{ uri: resolved }} style={styles.poster} />;
 }
 
 function relativeTime(dateString: string) {
@@ -257,6 +308,39 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     textAlign: "center",
     marginTop: 4,
+  },
+  countRow: {
+    marginTop: 6,
+    flexDirection: "row",
+    gap: spacing.md,
+  },
+  countText: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  followButton: {
+    marginTop: 8,
+    borderRadius: radii.pill,
+    backgroundColor: colors.accent,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+  },
+  followingButton: {
+    backgroundColor: colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: colors.accent,
+  },
+  followButtonText: {
+    color: colors.background,
+    fontWeight: "900",
+    fontSize: 12,
+  },
+  followingButtonText: {
+    color: colors.accent,
+  },
+  followDisabled: {
+    opacity: 0.55,
   },
   postsHeader: {
     flexDirection: "row",

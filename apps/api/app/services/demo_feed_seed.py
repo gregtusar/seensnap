@@ -1,85 +1,203 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from pathlib import Path
+import random
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.models.content import ContentTitle
-from app.models.social import (
-    FeedComment,
-    FeedEvent,
-    FeedReaction,
-    TeamActivity,
-    Team,
-    TeamMember,
-    TeamRanking,
-    TeamTitle,
-    Watchlist,
-    WatchlistItem,
-)
+from app.models.social import FeedComment, FeedEvent, FeedReaction, UserFollow
 from app.models.user import User, UserPreferences, UserProfile
 from app.services.feed import create_feed_event
+from app.services.follows import ensure_follows_table
 
-SEED_TAG = "demo_feed_v3"
+SEED_TAG = "demo_feed_v5"
+MEDIA_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
-USERS = [
-    "Greg Wallace",
-    "Erin Patel",
-    "Chloe Bennett",
-    "Lucas Reed",
-    "Ava Martinez",
-    "Ben Carter",
-    "Maya Thompson",
-    "Noah Kim",
-    "SeenSnap Demo",
+DEMO_USERS = [
+    {"code": "u1", "name": "Maya Chen", "username": "framebyframe", "bio": "Slow cinema. Long takes. Emotional damage.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_framebyframe.jpg"},
+    {"code": "u2", "name": "Jordan Alvarez", "username": "prestigepilled", "bio": "If it wins awards, I’m watching.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_prestigepilled.jpg"},
+    {"code": "u3", "name": "Sofia Romano", "username": "comfortrewatcher", "bio": "Rotating comfort shows forever.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_comfortrewatcher.jpg"},
+    {"code": "u4", "name": "Evan Brooks", "username": "cinematographyguy", "bio": "Directors matter. Cinematography matters more.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_cinematographyguy.jpg"},
+    {"code": "u5", "name": "Leila Haddad", "username": "horrorhead", "bio": "If it’s disturbing, I’ve seen it twice.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_horrorhead.jpg"},
+    {"code": "u6", "name": "Noah Greene", "username": "letterboxdcore", "bio": "Logging everything. Rewatching half.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_letterboxdcore.jpg"},
+    {"code": "u7", "name": "Chloe Park", "username": "softspotlight", "bio": "Messy women & moody lighting.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_softspotlight.jpg"},
+    {"code": "u8", "name": "Marcus Reed", "username": "plotarmorgone", "bio": "Good writing or I’m out.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_plotarmorgone.jpg"},
+    {"code": "u9", "name": "Tessa Morgan", "username": "rewindculture", "bio": "90s kid. Rewatch specialist.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_rewindculture.jpg"},
+    {"code": "u10", "name": "Aiden Clarke", "username": "blockbusterbrain", "bio": "Big screen. Big feelings.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_blockbusterbrain.jpg"},
+    {"code": "v1", "name": "Lena Hart", "username": "LenaHartOfficial", "bio": "Actor. Producer.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_LenaHartOfficial.jpg", "verified": True},
+    {"code": "v2", "name": "Diego Valez", "username": "DiegoValez", "bio": "Director.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_DiegoValez.jpg", "verified": True},
+    {"code": "v3", "name": "Rae Kim", "username": "RaeKimStudio", "bio": "Writer & Showrunner.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_RaeKimStudio.jpg", "verified": True},
+    {"code": "v4", "name": "Northlight Films", "username": "NorthlightFilms", "bio": "Independent studio.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_NorthlightFilms.jpg", "verified": True},
+    {"code": "platform_trending", "name": "Scene Snap Trending", "username": "seensnap_trending", "bio": "What the platform is watching right now.", "avatar": "/media/brand/seensnap_logo.png", "verified": True},
+    {"code": "industry_news", "name": "Scene Snap Industry", "username": "industry_news", "bio": "Industry updates and release radar.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_industry_news.jpg"},
+    {"code": "u_demo", "name": "SeenSnap Demo", "username": "seensnap_demo", "bio": "Official SeenSnap demo account.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_seensnap_demo.jpg"},
 ]
 
-USER_IDS = {
-    "user_greg": "Greg Wallace",
-    "user_erin": "Erin Patel",
-    "user_chloe": "Chloe Bennett",
-    "user_lucas": "Lucas Reed",
-    "user_ava": "Ava Martinez",
-    "user_ben": "Ben Carter",
-    "user_maya": "Maya Thompson",
-    "user_noah": "Noah Kim",
-    "user_demo": "SeenSnap Demo",
+FOLLOWING_SEED = ["u1", "u2", "u4", "u7", "u8"]
+
+TV_TITLE_HINTS = {
+    "Succession", "The Bear", "Girls", "Euphoria", "Severance", "Gilmore Girls", "The Crown", "Breaking Bad",
+    "True Detective S1", "Mindhunter", "Friends", "How I Met Your Mother", "The Sopranos", "The Office", "The OC",
+    "Ted Lasso", "Fleabag", "The Last of Us", "Mad Men", "True Detective",
 }
 
-TITLES = {
-    "oppenheimer": dict(tmdb_id=872585, content_type="movie", title="Oppenheimer", poster_path="/ptpr0kGAckfQkJeJIt8st5dglvd.jpg"),
-    "topgun_maverick": dict(tmdb_id=361743, content_type="movie", title="Top Gun: Maverick", poster_path="/62HCnUTziyWcpDaBO2i1DX17ljH.jpg"),
-    "last_of_us": dict(tmdb_id=100088, content_type="series", title="The Last of Us", poster_path="/uKvVjHNqB5VmOrdxqAt2F7J78ED.jpg"),
-    "euphoria": dict(tmdb_id=85552, content_type="series", title="Euphoria", poster_path="/3Q0hd3heuWwDWpwcDkhQOA6TYWI.jpg"),
-    "the_office": dict(tmdb_id=2316, content_type="series", title="The Office", poster_path="/qWnJzyZhyy74gjpSjIXWmuk0ifX.jpg"),
-    "band_of_brothers": dict(tmdb_id=4613, content_type="series", title="Band of Brothers", poster_path="/4fapIev5f9X8H7f8qf2U9A8f9Yw.jpg"),
-    "succession": dict(tmdb_id=76331, content_type="series", title="Succession", poster_path="/7HW47XbkNQ5fiwQFYGWdw9gs144.jpg"),
-    "severance": dict(tmdb_id=95396, content_type="series", title="Severance", poster_path="/pPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg"),
-    "dune2": dict(tmdb_id=693134, content_type="movie", title="Dune: Part Two", poster_path="/1pdfLvkbY9ohJlCjQH2CZjjYVvJ.jpg"),
-    "toy_story_2": dict(tmdb_id=863, content_type="movie", title="Toy Story 2", poster_path="/2MFIhZAW0CVfQ5JwJwM9k4r7Q9Q.jpg"),
-    "national_treasure": dict(tmdb_id=2059, content_type="movie", title="National Treasure", poster_path="/yHDy8sZojfA6tM80iJ7dV3P6l4X.jpg"),
-    "encanto": dict(tmdb_id=568124, content_type="movie", title="Encanto", poster_path="/4j0PNHkMr5ax3IA8tjtxcmPU3QT.jpg"),
-    "arrival": dict(tmdb_id=329865, content_type="movie", title="Arrival", poster_path="/x2FJsf1ElAgr63Y3PNPtJrcmpoe.jpg"),
-    "blade_runner_2049": dict(tmdb_id=335984, content_type="movie", title="Blade Runner 2049", poster_path="/gajva2L0rPYkEWjzgFlBXCAVBE5.jpg"),
-    "interstellar": dict(tmdb_id=157336, content_type="movie", title="Interstellar", poster_path="/gEU2QniE6E77NI6lCU6MxlNBvIx.jpg"),
-    "ex_machina": dict(tmdb_id=264660, content_type="movie", title="Ex Machina", poster_path="/dmJW8IAKHKxFNiUnoDR7JfsK7Rp.jpg"),
-}
+FOR_YOU_POSTS = [
+    {"id": "fy1", "author": "u2", "title": "Succession", "caption": "Succession might be the sharpest character writing of the last decade.", "likes": 842, "comments": ["Roman Roy dialogue is unmatched.", "Every scene feels like a chess match.", "Best finale I’ve seen in years.", "Kieran Culkin absolutely carried."]},
+    {"id": "fy2", "author": "u1", "title": "Past Lives", "caption": "Past Lives understands longing in a way most films don’t.", "likes": 411, "comments": ["The silence says more than dialogue.", "Greta Lee was unreal.", "That ending stayed with me."]},
+    {"id": "fy3", "author": "u7", "title": "Girls", "caption": "Girls ages with you. I judged them at 21. I get them at 28.", "likes": 366, "comments": ["Hannah feels too real now.", "The friendship chaos makes sense.", "I used to hate-watch. Now I relate."]},
+    {"id": "fy4", "author": "u5", "title": "Hereditary", "caption": "Hereditary still might be the most suffocating horror film ever made.", "likes": 529, "comments": ["The dinner scene is unbearable.", "Toni Collette deserved awards.", "Nothing else hits like this."]},
+    {"id": "fy5", "author": "u8", "title": "The Bear", "caption": "The Bear captures anxiety better than any thriller.", "likes": 733, "comments": ["Kitchen chaos feels real.", "Episode 7 still stresses me out.", "Jeremy Allen White is perfect."]},
+    {"id": "fy6", "author": "u4", "title": "Blade Runner 2049", "caption": "Blade Runner 2049 is pure visual poetry.", "likes": 904, "comments": ["Deakins deserved that Oscar.", "Every frame is insane.", "Soundtrack gives chills."]},
+    {"id": "fy7", "author": "u3", "title": "New Girl", "caption": "New Girl remains undefeated comfort TV.", "likes": 189, "comments": ["Nick Miller forever.", "Peak ensemble comedy.", "Schmidt never misses."]},
+    {"id": "fy8", "author": "u6", "title": "Aftersun", "caption": "Aftersun quietly breaks your heart without warning.", "likes": 512, "comments": ["Paul Mescal was incredible.", "The final scene destroyed me.", "So subtle but powerful."]},
+    {"id": "fy9", "author": "u10", "title": "Dune: Part Two", "caption": "Dune Part Two is scale done right.", "likes": 1122, "comments": ["The worm sequence???", "IMAX is mandatory.", "Pure spectacle."]},
+    {"id": "fy10", "author": "u9", "title": "The OC", "caption": "Rewatching The OC and realizing it defined an era.", "likes": 240, "comments": ["Soundtrack is elite.", "Marissa deserved better.", "Sandy Cohen remains king."]},
+    {"id": "fy11", "author": "u1", "title": "Call Me By Your Name", "caption": "Sunlight, longing, and that final fireplace scene.", "likes": 378, "comments": ["Sufjan Stevens forever.", "Emotionally devastating.", "I felt this deeply."]},
+    {"id": "fy12", "author": "u2", "title": "Oppenheimer", "caption": "Oppenheimer is overwhelming in the best way.", "likes": 954, "comments": ["Cillian Murphy was unreal.", "The sound design shook me.", "Nolan at his peak."]},
+    {"id": "fy13", "author": "u7", "title": "Euphoria", "caption": "Euphoria is chaos and vulnerability colliding.", "likes": 488, "comments": ["The cinematography is insane.", "Zendaya carries the emotional weight.", "Every episode feels cinematic."]},
+    {"id": "fy14", "author": "u4", "title": "Parasite", "caption": "Parasite remains a masterclass in tension.", "likes": 667, "comments": ["Perfect social commentary.", "Genre blending done right.", "That ending still hits."]},
+    {"id": "fy15", "author": "u8", "title": "Severance", "caption": "Severance is the most unsettling office drama ever.", "likes": 822, "comments": ["That hallway scene lives rent free.", "Concept is terrifying.", "Season 2 can’t come fast enough."]},
+    {"id": "fy16", "author": "u5", "title": "Midsommar", "caption": "Daylight horror just hits differently.", "likes": 542, "comments": ["Florence Pugh was incredible.", "That opening scene broke me.", "So disturbing but beautiful."]},
+    {"id": "fy17", "author": "u3", "title": "Gilmore Girls", "caption": "Fall = Gilmore Girls season.", "likes": 219, "comments": ["Stars Hollow vibes forever.", "Perfect cozy rewatch.", "Lorelai supremacy."]},
+    {"id": "fy18", "author": "u6", "title": "Anatomy of a Fall", "caption": "Courtroom tension done right.", "likes": 301, "comments": ["So precise and cold.", "Brilliant performances.", "I couldn’t look away."]},
+    {"id": "fy19", "author": "u10", "title": "Mad Max: Fury Road", "caption": "Still the best action movie of the 2010s.", "likes": 944, "comments": ["Nonstop adrenaline.", "Charlize Theron rules.", "Pure practical effects."]},
+    {"id": "fy20", "author": "u9", "title": "Friends", "caption": "Background comfort show forever.", "likes": 177, "comments": ["I know every episode.", "Still funny.", "Ultimate comfort."]},
+    {"id": "fy21", "author": "u1", "title": "Before Sunrise", "caption": "Conversations that feel real.", "likes": 288, "comments": ["Ethan Hawke peak.", "So intimate.", "Dialogue perfection."]},
+    {"id": "fy22", "author": "u2", "title": "The Crown", "caption": "Prestige TV done right.", "likes": 422, "comments": ["Costume design is stunning.", "Historical drama perfection.", "Acting masterclass."]},
+    {"id": "fy23", "author": "u7", "title": "Little Women", "caption": "Greta Gerwig understands emotion.", "likes": 355, "comments": ["Florence Pugh was electric.", "Warm and powerful.", "Cried twice."]},
+    {"id": "fy24", "author": "u4", "title": "Roma", "caption": "Black and white cinematography perfection.", "likes": 198, "comments": ["Visually breathtaking.", "So immersive.", "Quietly powerful."]},
+    {"id": "fy25", "author": "u8", "title": "Zodiac", "caption": "Fincher tension is unmatched.", "likes": 401, "comments": ["Still terrifying.", "Slow burn done right.", "Jake Gyllenhaal was great."]},
+    {"id": "fy26", "author": "u5", "title": "The Witch", "caption": "Atmosphere over jump scares always.", "likes": 266, "comments": ["That ending though.", "So unsettling.", "Black Phillip supremacy."]},
+    {"id": "fy27", "author": "u3", "title": "Ted Lasso", "caption": "Optimism TV we needed.", "likes": 333, "comments": ["Feel good perfection.", "Jason Sudeikis charm.", "Warm hug show."]},
+    {"id": "fy28", "author": "u6", "title": "Moonlight", "caption": "Tender and devastating.", "likes": 451, "comments": ["Visual poetry.", "That final scene.", "So quietly powerful."]},
+    {"id": "fy29", "author": "u10", "title": "Top Gun: Maverick", "caption": "Pure crowd-pleasing cinema.", "likes": 1021, "comments": ["IMAX experience.", "Tom Cruise still has it.", "Jet scenes were insane."]},
+    {"id": "fy30", "author": "u9", "title": "The Office", "caption": "Comfort rewatch #52.", "likes": 264, "comments": ["Michael Scott forever.", "Still funny.", "Peak sitcom."]},
+    {"id": "fy31", "author": "u1", "title": "Portrait of a Lady on Fire", "caption": "Glances say more than words.", "likes": 322, "comments": ["Visual storytelling perfection.", "So intimate.", "That final scene."]},
+    {"id": "fy32", "author": "u2", "title": "Breaking Bad", "caption": "Character descent done flawlessly.", "likes": 881, "comments": ["Walter White arc unmatched.", "Every episode matters.", "Peak prestige TV."]},
+    {"id": "fy33", "author": "u7", "title": "Lady Bird", "caption": "Coming-of-age perfection.", "likes": 290, "comments": ["So relatable.", "Saoirse Ronan forever.", "Heartfelt and funny."]},
+    {"id": "fy34", "author": "u4", "title": "The Godfather", "caption": "Still flawless filmmaking.", "likes": 512, "comments": ["Timeless classic.", "Pacino performance.", "Every frame iconic."]},
+    {"id": "fy35", "author": "u8", "title": "True Detective S1", "caption": "Atmosphere and dialogue perfection.", "likes": 643, "comments": ["Matthew McConaughey monologues.", "Dark and philosophical.", "Best season ever."]},
+    {"id": "fy36", "author": "u5", "title": "The Babadook", "caption": "Grief horror hits different.", "likes": 188, "comments": ["So emotionally heavy.", "Symbolism everywhere.", "Underrated classic."]},
+    {"id": "fy37", "author": "u3", "title": "Pride & Prejudice (2005)", "caption": "Comfort period romance.", "likes": 245, "comments": ["Keira Knightley glow.", "That hand flex moment.", "Soft romance perfection."]},
+    {"id": "fy38", "author": "u6", "title": "Whiplash", "caption": "Intensity from start to finish.", "likes": 534, "comments": ["Final scene is electric.", "J.K. Simmons deserved it.", "Pure tension."]},
+    {"id": "fy39", "author": "u10", "title": "Interstellar", "caption": "Space epic with heart.", "likes": 1103, "comments": ["Docking scene still insane.", "Hans Zimmer greatness.", "Father-daughter story hits."]},
+    {"id": "fy40", "author": "u9", "title": "How I Met Your Mother", "caption": "Comfort rewatch forever.", "likes": 204, "comments": ["Barney one-liners.", "Legend—wait for it—dary.", "Pure nostalgia."]},
+    {"id": "fy41", "author": "u1", "title": "Lost in Translation", "caption": "Loneliness captured perfectly.", "likes": 300, "comments": ["Bill Murray energy.", "Quiet and reflective.", "So atmospheric."]},
+    {"id": "fy42", "author": "u2", "title": "The Sopranos", "caption": "The blueprint for modern TV.", "likes": 712, "comments": ["Tony Soprano complexity.", "Timeless storytelling.", "Final scene debate."]},
+    {"id": "fy43", "author": "u7", "title": "Promising Young Woman", "caption": "Stylish and unsettling.", "likes": 356, "comments": ["Soundtrack hits.", "Carey Mulligan amazing.", "So sharp."]},
+    {"id": "fy44", "author": "u4", "title": "The Social Network", "caption": "Dialogue speedrun perfection.", "likes": 487, "comments": ["Aaron Sorkin magic.", "Score is iconic.", "Fincher precision."]},
+    {"id": "fy45", "author": "u8", "title": "Mindhunter", "caption": "Criminal psychology done right.", "likes": 421, "comments": ["So meticulously paced.", "Bring it back please.", "Chilling interviews."]},
+    {"id": "fy46", "author": "u5", "title": "Get Out", "caption": "Social horror masterpiece.", "likes": 607, "comments": ["Jordan Peele brilliance.", "Clever and terrifying.", "Cultural moment."]},
+    {"id": "fy47", "author": "u3", "title": "Mamma Mia!", "caption": "Joyful chaos forever.", "likes": 163, "comments": ["ABBA supremacy.", "Pure serotonin.", "Comfort movie."]},
+    {"id": "fy48", "author": "u6", "title": "Everything Everywhere All At Once", "caption": "Multiverse chaos with heart.", "likes": 692, "comments": ["Michelle Yeoh legend.", "So inventive.", "Emotional and wild."]},
+    {"id": "fy49", "author": "u10", "title": "The Dark Knight", "caption": "Still peak superhero cinema.", "likes": 1320, "comments": ["Heath Ledger unforgettable.", "Action and depth.", "Timeless."]},
+    {"id": "fy50", "author": "u9", "title": "Mean Girls", "caption": "Cultural reset forever.", "likes": 279, "comments": ["So quotable.", "Still funny.", "Regina George icon."]},
+]
+
+DISCOVER_POSTS = [
+    {"id": "d1", "author": "v1", "title": "Challengers", "caption": "We put everything into this film. See it with a crowd.", "likes": 18342, "comments": ["Opening night tickets booked.", "You were phenomenal in this.", "The tension never lets up.", "Best performance of your career.", "Saw it twice already."], "verified": True},
+    {"id": "d2", "author": "v2", "caption": "Behind the scenes — lighting tests before our final shot.", "likes": 9422, "comments": ["This composition is beautiful.", "Cinema lives in details like this.", "That color palette is perfect.", "Directors who care about craft."], "verified": True},
+    {"id": "d3", "author": "platform_trending", "caption": "Fleabag is surging again after a viral monologue clip resurfaced.", "likes": 11221, "comments": ["That speech still destroys me.", "Phoebe Waller-Bridge is unmatched.", "Time for another rewatch.", "Modern classic energy.", "Still hits every time."]},
+    {"id": "d4", "author": "u_demo", "caption": "🎟 Win tickets to an early screening near you.", "comments": [], "sponsored": True, "cta": "Enter Giveaway"},
+    {"id": "d5", "author": "platform_trending", "title": "The Bear", "caption": "The Bear S2 Christmas episode is one of the most discussed episodes of the year.", "likes": 10293, "comments": ["Anxiety levels through the roof.", "Best episode of television in years.", "Painfully relatable chaos.", "Acting masterclass.", "Holiday stress captured perfectly."]},
+    {"id": "d6", "author": "v3", "caption": "Writers room energy before our finale rewrite.", "likes": 7712, "comments": ["This is where the magic happens.", "Respect the craft.", "Story first always.", "Finales are brutal to write."], "verified": True},
+    {"id": "d7", "author": "platform_trending", "title": "Oppenheimer", "caption": "Oppenheimer returns to IMAX after fan demand.", "likes": 15672, "comments": ["IMAX is the only way.", "That sound design in theaters is unreal.", "Nolan made this for big screens.", "Going again this weekend."]},
+    {"id": "d8", "author": "platform_trending", "title": "Barbie", "caption": "Barbie remains one of the most saved films on Scene Snap this month.", "likes": 12231, "comments": ["Still obsessed.", "Production design was insane.", "Ryan Gosling stole every scene.", "Cultural moment."]},
+    {"id": "d9", "author": "u_demo", "caption": "📺 Stream the award-winning drama everyone’s talking about.", "comments": [], "sponsored": True, "cta": "Watch Now"},
+    {"id": "d10", "author": "v4", "caption": "Festival premiere night. Thank you to everyone who showed up.", "likes": 6811, "comments": ["Festival season is unmatched.", "Indie films deserve this spotlight.", "Congrats to the cast and crew.", "Beautiful moment."], "verified": True},
+    {"id": "d11", "author": "platform_trending", "title": "Saltburn", "caption": "Saltburn remains one of the most polarizing films this year.", "likes": 9821, "comments": ["Love it or hate it energy.", "Visually insane.", "I’m still thinking about it.", "That ending shocked me."]},
+    {"id": "d12", "author": "platform_trending", "title": "Succession", "caption": "Succession finale discourse resurfaces with anniversary rewatches.", "likes": 11042, "comments": ["Still the best ending.", "Roman Roy hive forever.", "Peak television writing.", "Miss this show daily."]},
+    {"id": "d13", "author": "industry_news", "caption": "A24 announces three new projects for 2025 slate.", "likes": 7310, "comments": ["A24 never misses.", "Already excited.", "Indie film renaissance.", "Can’t wait."]},
+    {"id": "d14", "author": "platform_trending", "title": "Dune: Part Two", "caption": "Dune Part Two crosses major global box office milestone.", "likes": 14221, "comments": ["Deserved success.", "Sci-fi epic done right.", "The scale is insane.", "Zimmer score lives rent free."]},
+    {"id": "d15", "author": "platform_trending", "title": "Severance", "caption": "Severance Season 2 teaser sparks massive fan theories.", "likes": 9210, "comments": ["The concept is terrifying.", "Season 1 ending still haunts me.", "Theories everywhere.", "Best workplace thriller."]},
+    {"id": "d16", "author": "u_demo", "caption": "🍿 New releases curated for your watchlist.", "comments": [], "sponsored": True, "cta": "Browse Now"},
+    {"id": "d17", "author": "platform_trending", "title": "The Last of Us", "caption": "The Last of Us Season 2 casting news dominates timeline.", "likes": 10431, "comments": ["Perfect casting choice.", "Pedro Pascal supremacy.", "Game adaptation done right.", "Emotional damage incoming."]},
+    {"id": "d18", "author": "platform_trending", "title": "Euphoria", "caption": "Euphoria remains one of the most visually discussed shows online.", "likes": 8892, "comments": ["The lighting is insane.", "Zendaya carries every scene.", "Soundtrack never misses.", "Visually unforgettable."]},
+    {"id": "d19", "author": "platform_trending", "title": "Poor Things", "caption": "Poor Things wins major production design awards.", "likes": 7601, "comments": ["Set design was unreal.", "So surreal and bold.", "Yorgos Lanthimos vision.", "Emma Stone was incredible."]},
+    {"id": "d20", "author": "platform_trending", "title": "Anatomy of a Fall", "caption": "Courtroom dramas see resurgence after Anatomy of a Fall buzz.", "likes": 5481, "comments": ["Tense and precise.", "Smart writing.", "Performances carried it.", "Critically deserved."]},
+    {"id": "d21", "author": "platform_trending", "title": "Fleabag", "caption": "‘It’ll pass’ scene trends again on social.", "likes": 12011, "comments": ["That scene wrecks me.", "Timeless writing.", "Phoebe Waller-Bridge genius.", "Still relatable."]},
+    {"id": "d22", "author": "industry_news", "caption": "Streaming platforms report major spike in rewatch culture.", "likes": 3921, "comments": ["Comfort shows forever.", "Rewatching hits different.", "Nostalgia content rules.", "So true."]},
+    {"id": "d23", "author": "platform_trending", "title": "Interstellar", "caption": "Interstellar re-release rumors excite fans.", "likes": 10220, "comments": ["Docking scene IMAX please.", "Zimmer score supremacy.", "Cried in theaters.", "Going again."]},
+    {"id": "d24", "author": "platform_trending", "title": "The Social Network", "caption": "The Social Network clips trend as tech biopics resurface.", "likes": 4832, "comments": ["Sorkin dialogue speedrun.", "Fincher precision.", "Still relevant.", "Score is iconic."]},
+    {"id": "d25", "author": "platform_trending", "title": "Breaking Bad", "caption": "Breaking Bad remains most completed prestige series on platform.", "likes": 12903, "comments": ["Perfect character arc.", "Walter White descent unmatched.", "Every episode matters.", "Peak prestige."]},
+    {"id": "d26", "author": "u_demo", "caption": "🎬 Director commentary now streaming.", "comments": [], "sponsored": True, "cta": "Watch Extras"},
+    {"id": "d27", "author": "platform_trending", "title": "Mad Men", "caption": "Mad Men aesthetic resurges on style feeds.", "likes": 6204, "comments": ["Don Draper visuals unmatched.", "Costume design perfection.", "Moody lighting forever.", "Style icon show."]},
+    {"id": "d28", "author": "platform_trending", "title": "Parasite", "caption": "Parasite re-enters global trending lists.", "likes": 10022, "comments": ["Still perfect.", "Genre blending mastery.", "That final act tension.", "Modern classic."]},
+    {"id": "d29", "author": "platform_trending", "title": "Moonlight", "caption": "Moonlight clips trend during Pride Month programming.", "likes": 8102, "comments": ["Tender and powerful.", "Visual poetry.", "Emotionally unforgettable.", "Beautiful film."]},
+    {"id": "d30", "author": "platform_trending", "title": "Everything Everywhere All At Once", "caption": "Multiverse films see surge after awards season.", "likes": 11200, "comments": ["So inventive.", "Michelle Yeoh legend.", "Emotional chaos done right.", "Still thinking about it."]},
+    {"id": "d31", "author": "platform_trending", "title": "The Sopranos", "caption": "Sopranos anniversary sparks rewatch marathons.", "likes": 9211, "comments": ["Blueprint for modern TV.", "Tony Soprano complexity.", "Timeless storytelling.", "Finale still debated."]},
+    {"id": "d32", "author": "platform_trending", "title": "True Detective", "caption": "True Detective S1 still dominates best-season debates.", "likes": 7004, "comments": ["McConaughey monologues unmatched.", "Atmosphere perfection.", "Dark and philosophical.", "Best season ever."]},
+    {"id": "d33", "author": "platform_trending", "title": "Call Me By Your Name", "caption": "Summer romance films trend with seasonal playlists.", "likes": 5341, "comments": ["Sunlight cinematography.", "Sufjan Stevens forever.", "Soft heartbreak.", "Atmospheric beauty."]},
+    {"id": "d34", "author": "platform_trending", "title": "Zodiac", "caption": "Fincher thrillers dominate late-night streaming stats.", "likes": 6621, "comments": ["Slow burn mastery.", "Tension through silence.", "Gyllenhaal performance underrated.", "Still chilling."]},
+    {"id": "d35", "author": "platform_trending", "title": "The Dark Knight", "caption": "The Dark Knight returns to top superhero rankings.", "likes": 15812, "comments": ["Heath Ledger legacy.", "Peak genre filmmaking.", "Timeless villain performance.", "Still unmatched."]},
+    {"id": "d36", "author": "platform_trending", "title": "Mean Girls", "caption": "Mean Girls remains endlessly quotable.", "likes": 7802, "comments": ["Cultural reset forever.", "So rewatchable.", "Regina George icon.", "Still hilarious."]},
+    {"id": "d37", "author": "platform_trending", "title": "Lady Bird", "caption": "Coming-of-age films see renewed interest.", "likes": 6012, "comments": ["So relatable.", "Heartfelt storytelling.", "Saoirse Ronan forever.", "Warm and honest."]},
+    {"id": "d38", "author": "platform_trending", "title": "The Office", "caption": "The Office remains most rewatched sitcom.", "likes": 12503, "comments": ["Comfort TV forever.", "Michael Scott supremacy.", "Background binge staple.", "Never gets old."]},
+    {"id": "d39", "author": "platform_trending", "title": "Friends", "caption": "Friends nostalgia cycle continues.", "likes": 11132, "comments": ["Ultimate comfort show.", "Soundtrack memories.", "Iconic sitcom energy.", "Still funny."]},
+    {"id": "d40", "author": "u_demo", "caption": "🎟 Exclusive behind-the-scenes content now available.", "comments": [], "sponsored": True, "cta": "Watch Now"},
+    {"id": "d41", "author": "platform_trending", "title": "Whiplash", "caption": "Music dramas surge in popularity.", "likes": 5402, "comments": ["Final scene electric.", "J.K. Simmons intensity.", "Pure tension filmmaking.", "Unforgettable ending."]},
+    {"id": "d42", "author": "platform_trending", "title": "Her", "caption": "Soft sci-fi romance resurges in curated lists.", "likes": 4903, "comments": ["Lonely but beautiful.", "Joaquin Phoenix performance.", "Visually dreamy.", "Emotional storytelling."]},
+    {"id": "d43", "author": "platform_trending", "title": "Get Out", "caption": "Social horror remains culturally relevant.", "likes": 10211, "comments": ["Jordan Peele brilliance.", "Clever and tense.", "Modern classic horror.", "Still powerful."]},
+    {"id": "d44", "author": "platform_trending", "title": "Little Women", "caption": "Period dramas trend during awards discourse.", "likes": 4502, "comments": ["Greta Gerwig storytelling.", "Florence Pugh performance.", "Warm and emotional.", "Beautiful adaptation."]},
+    {"id": "d45", "author": "platform_trending", "title": "Blade Runner 2049", "caption": "Sci-fi visuals dominate cinematography rankings.", "likes": 8711, "comments": ["Every frame stunning.", "Deakins masterpiece.", "Atmospheric perfection.", "Visual poetry."]},
+    {"id": "d46", "author": "platform_trending", "title": "Midsommar", "caption": "Daylight horror continues to trend.", "likes": 7301, "comments": ["Unsettling visuals.", "Florence Pugh carried.", "Disturbing and beautiful.", "Haunting atmosphere."]},
+    {"id": "d47", "author": "platform_trending", "title": "Gilmore Girls", "caption": "Fall viewing season sparks Gilmore Girls rewatch wave.", "likes": 5202, "comments": ["Stars Hollow comfort.", "Perfect autumn show.", "Cozy vibes forever.", "Seasonal staple."]},
+    {"id": "d48", "author": "platform_trending", "title": "Before Sunrise", "caption": "Romantic dialogue classics resurface in lists.", "likes": 4012, "comments": ["So intimate.", "Conversations feel real.", "Ethan Hawke peak.", "Quiet romance perfection."]},
+    {"id": "d49", "author": "platform_trending", "title": "Roma", "caption": "Black-and-white cinema resurges in film circles.", "likes": 3120, "comments": ["Visually breathtaking.", "Quietly powerful.", "Immersive storytelling.", "Art house excellence."]},
+    {"id": "d50", "author": "platform_trending", "title": "Portrait of a Lady on Fire", "caption": "Slow-burn romances trend in curated feeds.", "likes": 5221, "comments": ["Glances speak volumes.", "Visual storytelling perfection.", "Emotionally devastating.", "Modern masterpiece."]},
+]
 
 
-def _slug(name: str) -> str:
-    return name.lower().replace(" ", ".")
+def _infer_content_type(title: str) -> str:
+    return "series" if title in TV_TITLE_HINTS else "movie"
 
 
-def _avatar(index: int) -> str:
-    avatar_ids = [11, 22, 33, 45, 57, 61, 66, 69, 71]
-    return f"https://i.pravatar.cc/160?img={avatar_ids[(index - 1) % len(avatar_ids)]}"
+def _stable_tmdb_id(title: str) -> int:
+    return 9000000 + (sum(ord(char) for char in title) % 900000)
 
 
-def _upsert_user(db: Session, name: str, index: int) -> User:
-    email = f"{_slug(name)}@demo.seensnap.local"
+def _uploads_root() -> Path:
+    return Path(__file__).resolve().parents[2] / "uploads"
+
+
+def _media_urls(subdir: str) -> list[str]:
+    root = _uploads_root() / subdir
+    if not root.exists():
+        return []
+    urls: list[str] = []
+    for file in sorted(root.iterdir()):
+        if file.is_file() and file.suffix.lower() in MEDIA_EXTENSIONS:
+            urls.append(f"/media/{subdir}/{file.name}")
+    return urls
+
+
+def _avatar_assignments() -> dict[str, str]:
+    non_platform_codes = [entry["code"] for entry in DEMO_USERS if entry["code"] != "platform_trending"]
+    # Use the full uploaded user-media pool so fake users get visibly distinct avatars.
+    user_uploads = [url for url in _media_urls("users") if "seensnap_logo" not in url]
+    pool = user_uploads or [url for url in _media_urls("avatars") if "seensnap_logo" not in url]
+    if not pool:
+        return {code: "/media/brand/title_placeholder.jpg" for code in non_platform_codes}
+
+    rng = random.Random(20260308)
+    rng.shuffle(pool)
+    return {code: pool[idx % len(pool)] for idx, code in enumerate(non_platform_codes)}
+
+
+def _title_fallback_poster(title_name: str) -> str:
+    posters = [url for url in _media_urls("titles") if "seensnap_logo" not in url]
+    if not posters:
+        return "/media/brand/title_placeholder.jpg"
+    index = sum(ord(char) for char in title_name) % len(posters)
+    return posters[index]
+
+
+def _upsert_user(db: Session, user_data: dict) -> User:
+    email = f"{user_data['username'].lower()}@demo.seensnap.local"
     user = db.scalar(select(User).where(func.lower(User.email) == email))
     if user is None:
         user = User(email=email, auth_provider="demo")
@@ -88,311 +206,148 @@ def _upsert_user(db: Session, name: str, index: int) -> User:
 
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
     if profile is None:
-        profile = UserProfile(
-            user_id=user.id,
-            username=_slug(name)[:32],
-            display_name=name,
-            avatar_url=_avatar(index),
-            favorite_genres=[],
-            country_code="US",
-        )
+        profile = UserProfile(user_id=user.id)
         db.add(profile)
-    else:
-        profile.display_name = name
-        profile.avatar_url = _avatar(index)
+
+    profile.username = user_data["username"][:32]
+    profile.display_name = user_data["name"]
+    profile.avatar_url = user_data["avatar"]
+    profile.bio = user_data.get("bio")
+    profile.favorite_genres = []
+    profile.country_code = "US"
 
     preferences = db.scalar(select(UserPreferences).where(UserPreferences.user_id == user.id))
     if preferences is None:
         db.add(UserPreferences(user_id=user.id))
 
-    watchlist = db.scalar(select(Watchlist).where(Watchlist.owner_user_id == user.id, Watchlist.is_default.is_(True)))
-    if watchlist is None:
-        db.add(Watchlist(owner_user_id=user.id, name="My Picks", is_default=True))
     return user
 
 
-def _upsert_title(db: Session, key: str) -> ContentTitle:
-    info = TITLES[key]
-    title = db.scalar(select(ContentTitle).where(ContentTitle.tmdb_id == info["tmdb_id"]))
-    poster_url = f"https://image.tmdb.org/t/p/w500{info['poster_path']}"
-    if title is None:
-        title = ContentTitle(
-            tmdb_id=info["tmdb_id"],
-            content_type=info["content_type"],
-            title=info["title"],
-            original_title=info["title"],
-            overview=info["title"],
-            poster_url=poster_url,
-            backdrop_url=poster_url,
-            genres=[],
-            metadata_raw={"seed_tag": SEED_TAG},
-        )
-        db.add(title)
-        db.flush()
-    else:
-        title.poster_url = title.poster_url or poster_url
-        title.backdrop_url = title.backdrop_url or poster_url
+def _upsert_title(db: Session, title_name: str) -> ContentTitle:
+    fallback_poster = _title_fallback_poster(title_name)
+    existing = db.scalar(select(ContentTitle).where(func.lower(ContentTitle.title) == title_name.lower()))
+    if existing is not None:
+        # Force seeded titles onto local media so stale/remote/broken links never leak into the demo feed.
+        existing.poster_url = fallback_poster
+        existing.backdrop_url = fallback_poster
+        return existing
+
+    tmdb_id = _stable_tmdb_id(title_name)
+    while db.scalar(select(ContentTitle).where(ContentTitle.tmdb_id == tmdb_id)) is not None:
+        tmdb_id += 1
+
+    title = ContentTitle(
+        tmdb_id=tmdb_id,
+        content_type=_infer_content_type(title_name),
+        title=title_name,
+        original_title=title_name,
+        overview=title_name,
+        poster_url=fallback_poster,
+        backdrop_url=fallback_poster,
+        genres=[],
+        metadata_raw={"seed_tag": SEED_TAG, "seeded": True},
+    )
+    db.add(title)
+    db.flush()
     return title
 
 
-def _team_slug(value: str) -> str:
-    return "-".join(part for part in "".join(ch.lower() if ch.isalnum() else "-" for ch in value).split("-") if part)
+def _reaction_counts_from_likes(likes: int) -> dict[str, int]:
+    base = max(1, min(32, likes // 120))
+    return {
+        "heart": max(1, base),
+        "fire": max(0, base // 2),
+        "thumbs_down": 0,
+        "tomato": 0,
+    }
 
 
-def _ensure_team(
-    db: Session,
-    owner: User,
-    name: str,
-    members: list[User],
-    *,
-    description: str,
-    icon: str,
-    visibility: str = "private",
-) -> Team:
-    slug = _team_slug(name)
-    team = db.scalar(
-        select(Team).where((Team.name == name) | (Team.slug == slug), Team.archived_at.is_(None))
-    )
-    if team is None:
-        team = Team(
-            name=name,
-            slug=slug,
-            description=description,
-            visibility=visibility,
-            icon=icon,
-            owner_user_id=owner.id,
-            invite_code=uuid4().hex[:8],
-            max_members=10,
-        )
-        db.add(team)
-        db.flush()
-    else:
-        team.name = name
-        team.slug = slug
-        team.description = description
-        team.icon = icon
-        team.visibility = visibility
-
-    for user in members:
-        membership = db.scalar(select(TeamMember).where(TeamMember.team_id == team.id, TeamMember.user_id == user.id))
-        role = "owner" if user.id == owner.id else "member"
-        if membership is None:
-            db.add(TeamMember(team_id=team.id, user_id=user.id, role=role, status="active"))
-        else:
-            membership.status = "active"
-            membership.role = role
-    return team
-
-
-def _upsert_reactor_user(db: Session, index: int) -> User:
-    email = f"fan{index:03d}@demo.seensnap.local"
-    user = db.scalar(select(User).where(func.lower(User.email) == email))
-    if user is None:
-        user = User(email=email, auth_provider="demo")
-        db.add(user)
-        db.flush()
-    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
-    if profile is None:
-        db.add(
-            UserProfile(
-                user_id=user.id,
-                username=f"fan{index:03d}",
-                display_name=f"SeenSnap Fan {index:03d}",
-                avatar_url=f"https://i.pravatar.cc/160?img={((index - 1) % 70) + 1}",
-                favorite_genres=[],
-                country_code="US",
-            )
-        )
-    return user
-
-
-def _add_reactions(db: Session, event: FeedEvent, counts: dict[str, int], reactor_users: list[User]) -> None:
-    pool = iter(reactor_users)
+def _add_reactions(db: Session, event: FeedEvent, counts: dict[str, int], reactors: list[User]) -> None:
+    idx = 0
     for reaction, count in counts.items():
         for _ in range(count):
-            user = next(pool, None)
-            if user is None:
+            if idx >= len(reactors):
                 return
-            db.add(FeedReaction(event_id=event.id, user_id=user.id, reaction=reaction))
+            reactor = reactors[idx]
+            idx += 1
+            db.add(FeedReaction(event_id=event.id, user_id=reactor.id, reaction=reaction))
 
 
-def _add_comments(
-    db: Session,
-    event: FeedEvent,
-    users: dict[str, User],
-    comments: list[dict],
-    target_count: int,
-) -> None:
-    inserted = 0
-    for comment in comments:
-        author = users[USER_IDS[comment["authorId"]]]
-        root = FeedComment(event_id=event.id, user_id=author.id, body=comment["text"])
-        db.add(root)
-        db.flush()
-        inserted += 1
-        for reply in comment.get("replies", []):
-            reply_user = users[USER_IDS[reply["authorId"]]]
-            db.add(
-                FeedComment(
-                    event_id=event.id,
-                    user_id=reply_user.id,
-                    parent_comment_id=root.id,
-                    body=reply["text"],
-                )
-            )
-            inserted += 1
-
-    filler_users = list(users.values())
-    while inserted < target_count:
-        user = filler_users[inserted % len(filler_users)]
-        db.add(FeedComment(event_id=event.id, user_id=user.id, body=f"Great pick ({inserted + 1})."))
-        inserted += 1
+def _add_comments(db: Session, event: FeedEvent, comments: list[str], commenters: list[User]) -> None:
+    for idx, body in enumerate(comments):
+        commenter = commenters[idx % len(commenters)]
+        db.add(FeedComment(event_id=event.id, user_id=commenter.id, body=body))
 
 
 def seed_demo_feed() -> None:
     db = SessionLocal()
     try:
-        db.execute(
-            delete(FeedReaction).where(
-                FeedReaction.event_id.in_(
-                    select(FeedEvent.id).where(FeedEvent.payload["seed_tag"].astext.in_(["demo_feed_v1", "demo_feed_v2", SEED_TAG]))
-                )
-            )
-        )
-        db.execute(
-            delete(FeedComment).where(
-                FeedComment.event_id.in_(
-                    select(FeedEvent.id).where(FeedEvent.payload["seed_tag"].astext.in_(["demo_feed_v1", "demo_feed_v2", SEED_TAG]))
-                )
-            )
-        )
-        db.execute(
-            delete(FeedEvent).where(FeedEvent.payload["seed_tag"].astext.in_(["demo_feed_v1", "demo_feed_v2", SEED_TAG]))
-        )
-        db.commit()
+        ensure_follows_table(db)
 
-        users = {name: _upsert_user(db, name, i + 1) for i, name in enumerate(USERS)}
-        titles = {key: _upsert_title(db, key) for key in TITLES}
-        reactors = [_upsert_reactor_user(db, i + 1) for i in range(140)]
+        demo_event_ids = select(FeedEvent.id).where(FeedEvent.payload["seed_tag"].astext.like("demo_feed_v%"))
+        db.execute(delete(FeedReaction).where(FeedReaction.event_id.in_(demo_event_ids)))
+        db.execute(delete(FeedComment).where(FeedComment.event_id.in_(demo_event_ids)))
+        db.execute(delete(FeedEvent).where(FeedEvent.payload["seed_tag"].astext.like("demo_feed_v%")))
 
-        family_team = _ensure_team(
-            db,
-            users["Ava Martinez"],
-            "#Family Watch Team",
-            [users[n] for n in ["Ava Martinez", "Greg Wallace", "Chloe Bennett", "Ben Carter", "Lucas Reed"]],
-            description="Comfort rewatches, heated rankings, and zero genre discipline.",
-            icon="🍿",
-        )
-        friday_team = _ensure_team(
-            db,
-            users["Lucas Reed"],
-            "#FridayNight Watch Team",
-            [users[n] for n in ["Lucas Reed", "Maya Thompson", "Noah Kim", "Greg Wallace"]],
-            description="Big swings, prestige picks, and something we can all argue about.",
-            icon="🎬",
-        )
-        scifi_team = _ensure_team(
-            db,
-            users["Maya Thompson"],
-            "#SciFi Club",
-            [users[n] for n in ["Maya Thompson", "Noah Kim", "Erin Patel", "Lucas Reed"]],
-            description="Time loops, dystopias, and people making terrible choices in space.",
-            icon="🚀",
-        )
-        college_team = _ensure_team(
-            db,
-            users["Ben Carter"],
-            "#College Friends Watch Team",
-            [users[n] for n in ["Ben Carter", "Chloe Bennett", "Greg Wallace", "Ava Martinez"]],
-            description="Nostalgia, chaos, and movies that should probably stay in 2009.",
-            icon="🎓",
-        )
+        users_by_code: dict[str, User] = {}
+        avatar_map = _avatar_assignments()
+        for entry in DEMO_USERS:
+            hydrated_entry = dict(entry)
+            if hydrated_entry["code"] != "platform_trending":
+                hydrated_entry["avatar"] = avatar_map.get(hydrated_entry["code"], hydrated_entry["avatar"])
+            users_by_code[entry["code"]] = _upsert_user(db, hydrated_entry)
 
-        team_ids = [family_team.id, friday_team.id, scifi_team.id, college_team.id]
-        db.execute(delete(TeamTitle).where(TeamTitle.team_id.in_(team_ids)))
-        db.execute(delete(TeamRanking).where(TeamRanking.team_id.in_(team_ids)))
-        db.execute(delete(TeamActivity).where(TeamActivity.team_id.in_(team_ids), TeamActivity.payload["seed_tag"].astext == SEED_TAG))
+        demo_user_ids = {user.id for user in users_by_code.values()}
+        db.execute(delete(UserFollow).where(UserFollow.follower_user_id.in_(demo_user_ids) | UserFollow.following_user_id.in_(demo_user_ids)))
 
-        team_title_seed = {
-            family_team.id: ["the_office", "band_of_brothers", "toy_story_2", "national_treasure", "encanto"],
-            friday_team.id: ["dune2", "oppenheimer", "topgun_maverick", "succession", "last_of_us"],
-            scifi_team.id: ["severance", "arrival", "blade_runner_2049", "interstellar", "ex_machina"],
-            college_team.id: ["national_treasure", "topgun_maverick", "toy_story_2", "the_office"],
-        }
+        current_user = users_by_code["u_demo"]
+        for followed_code in FOLLOWING_SEED:
+            db.add(UserFollow(follower_user_id=current_user.id, following_user_id=users_by_code[followed_code].id))
 
-        for team_id, title_keys in team_title_seed.items():
-            for idx, title_key in enumerate(title_keys, start=1):
-                title = titles[title_key]
-                db.add(
-                    TeamTitle(
-                        team_id=team_id,
-                        content_title_id=title.id,
-                        added_by_user_id=users["SeenSnap Demo"].id,
-                        note="Seeded for watch team demo",
-                    )
-                )
-                db.add(
-                    TeamRanking(
-                        team_id=team_id,
-                        content_title_id=title.id,
-                        rank=idx,
-                        score=max(9.6 - (idx * 0.3), 7.1),
-                        movement="up" if idx <= 2 else "same",
-                        weeks_on_list=idx + 1,
-                    )
-                )
+        seeded_titles = {post["title"] for post in FOR_YOU_POSTS + DISCOVER_POSTS if post.get("title")}
+        titles_by_name = {title_name: _upsert_title(db, title_name) for title_name in sorted(seeded_titles)}
+
+        commenter_pool = [users_by_code[code] for code in ["u1", "u2", "u3", "u4", "u5", "u6", "u7", "u8", "u9", "u10"]]
+        reactor_pool = commenter_pool + [users_by_code["u_demo"], users_by_code["platform_trending"], users_by_code["industry_news"]]
 
         now = datetime.now(UTC)
+        all_posts = [("for_you", row) for row in FOR_YOU_POSTS] + [("discover", row) for row in DISCOVER_POSTS]
 
-        events_data = [
-            dict(id="post_greg_oppenheimer_rating", segment="for_you", event_type="rating", actor="Greg Wallace", title="oppenheimer", body="Cillian Murphy was unreal.", cta="Where to Watch", action_label="rated a movie", reactions={"fire": 29, "heart": 45, "thumbs_down": 0, "tomato": 0}, comments_count=13, comments=[dict(authorId="user_maya", text="The last hour is absolutely insane.", replies=[dict(authorId="user_noah", text="That score does so much work too.")]), dict(authorId="user_ben", text="I still can’t believe how tense a hearing scene was."), dict(authorId="user_chloe", text="Need a rewatch just for the visuals.")]),
-            dict(id="post_chloe_topgun_poster", segment="for_you", event_type="poster_share", actor="Chloe Bennett", title="topgun_maverick", body="You in the cockpit. Obviously.", cta="View Poster", action_label="shared a poster", reactions={"fire": 33, "heart": 40, "thumbs_down": 0, "tomato": 0}, comments_count=8, comments=[dict(authorId="user_ava", text="This is aggressively on-brand."), dict(authorId="user_lucas", text="Honestly? Frame it.")]),
-            dict(id="post_erin_euphoria_soundtrack", segment="for_you", event_type="soundtrack_activity", actor="Erin Patel", title="euphoria", body="Top streaming soundtrack this week. Labrinth stays undefeated.", cta="Listen Now", action_label="soundtrack activity", reactions={"fire": 18, "heart": 27, "thumbs_down": 1, "tomato": 0}, comments_count=5, comments=[dict(authorId="user_greg", text="I forgot how good this soundtrack is."), dict(authorId="user_chloe", text="This one absolutely owns late-night driving.")]),
-            dict(id="post_lucas_lastofus_rec", segment="for_you", event_type="recommendation", actor="Lucas Reed", title="last_of_us", body="If you somehow skipped this, now is the time.", cta="See Details", action_label="recommended a title", reactions={"fire": 21, "heart": 31, "thumbs_down": 1, "tomato": 0}, comments_count=7, comments=[dict(authorId="user_maya", text="Episode 3 still hasn’t left my brain."), dict(authorId="user_noah", text="The production design alone is worth it.")]),
-            dict(id="post_ben_office_discover", segment="for_you", event_type="community_pick", actor="SeenSnap Demo", title="the_office", body="SeenSnap’s #1 ranked comfort comedy this week.", cta="View Rankings", action_label="ranked comedy update", reactions={"fire": 6, "heart": 19, "thumbs_down": 3, "tomato": 1}, comments_count=4, comments=[dict(authorId="user_ben", text="Correct. No notes."), dict(authorId="user_ava", text="Parks and Rec is going to want a recount.")]),
-            dict(id="post_team_family_watchlist", segment="watch_teams", event_type="watch_team_update", actor="SeenSnap Demo", title="the_office", team=family_team.id, body="Added to the family comfort-watch rotation.", cta="View Team Rankings", action_label="watchlist item added", reactions={"fire": 1, "heart": 0, "thumbs_down": 0, "tomato": 0}, comments_count=3, comments=[dict(authorId="user_ben", text="This was inevitable."), dict(authorId="user_chloe", text="Only if we agree to skip Scott’s Tots.")]),
-            dict(id="post_ava_trivia", segment="watch_teams", event_type="quiz_result", actor="Ava Martinez", title=None, team=family_team.id, body="90% on 80s Movie Trivia. Everyone else, good luck.", cta="Play Quiz", action_label="scored 90% on trivia", reactions={"fire": 14, "heart": 7, "thumbs_down": 0, "tomato": 0}, comments_count=4, comments=[dict(authorId="user_lucas", text="I’m blaming the soundtrack questions."), dict(authorId="user_greg", text="Run it back.")]),
-            dict(id="post_lucas_bandofbrothers_team", segment="watch_teams", event_type="recommendation", actor="Lucas Reed", title="band_of_brothers", team=friday_team.id, body="If we’re doing one prestige war series this month, it should be this.", cta="See Details", action_label="recommended to Watch Team", reactions={"fire": 17, "heart": 24, "thumbs_down": 0, "tomato": 0}, comments_count=6, comments=[dict(authorId="user_greg", text="This is one of those ‘watch it once and never forget it’ shows."), dict(authorId="user_maya", text="Putting this on the shortlist immediately.")]),
-            dict(id="post_scifi_arrival_add", segment="watch_teams", event_type="watch_team_update", actor="Maya Thompson", title="arrival", team=scifi_team.id, body="Added Arrival to #SciFi Club tonight.", cta="See Details", action_label="watchlist item added", reactions={"fire": 10, "heart": 16, "thumbs_down": 0, "tomato": 0}, comments_count=3, comments=[dict(authorId="user_noah", text="Great pick. Villeneuve week?"), dict(authorId="user_erin", text="Yes please.")]),
-            dict(id="post_scifi_severance_discussion", segment="watch_teams", event_type="team_post", actor="Noah Kim", title="severance", team=scifi_team.id, body="Anyone else think Lumon is still the best dystopian office world?", cta="Join Discussion", action_label="started a discussion", reactions={"fire": 12, "heart": 14, "thumbs_down": 1, "tomato": 0}, comments_count=4, comments=[dict(authorId="user_maya", text="Season 2 escalated perfectly."), dict(authorId="user_lucas", text="Completely agree.")]),
-            dict(id="post_scifi_interstellar_soundtrack", segment="watch_teams", event_type="soundtrack_activity", actor="Erin Patel", title="interstellar", team=scifi_team.id, body="Shared the Interstellar soundtrack for this week’s watch.", cta="Listen Now", action_label="shared a soundtrack", reactions={"fire": 9, "heart": 15, "thumbs_down": 0, "tomato": 0}, comments_count=2, comments=[dict(authorId="user_maya", text="Docking scene music forever.")]),
-            dict(id="post_discover_office_ranked", segment="discover", event_type="community_pick", actor="SeenSnap Demo", title="the_office", body="SeenSnap’s #1 ranked comedy.", cta="View Rankings", action_label="platform ranking", reactions={"fire": 0, "heart": 0, "thumbs_down": 1, "tomato": 0}, comments_count=2, comments=[dict(authorId="user_ben", text="This is exactly where it belongs.")]),
-            dict(id="post_discover_euphoria_soundtrack", segment="discover", event_type="soundtrack_activity", actor="Erin Patel", title="euphoria", body="Top streaming soundtrack on SeenSnap today.", cta="Listen Now", action_label="top soundtrack trend", reactions={"fire": 12, "heart": 21, "thumbs_down": 0, "tomato": 0}, comments_count=3, comments=[dict(authorId="user_chloe", text="Every track on this thing feels expensive.")]),
-            dict(id="post_discover_succession_wave", segment="discover", event_type="trending_now", actor="SeenSnap Demo", title="succession", body="3 of your friends are watching this right now.", cta="See Why", action_label="trending now", reactions={"fire": 19, "heart": 23, "thumbs_down": 0, "tomato": 0}, comments_count=4, comments=[dict(authorId="user_greg", text="This show gets funnier every time someone loses their mind in a boardroom.")]),
-            dict(id="post_discover_severance_pick", segment="discover", event_type="recommended_title", actor="SeenSnap Demo", title="severance", body="Because you liked Succession and The Last of Us.", cta="See Details", action_label="recommended for you", reactions={"fire": 11, "heart": 19, "thumbs_down": 0, "tomato": 0}, comments_count=3, comments=[dict(authorId="user_maya", text="Absolutely yes if you want corporate dread as a genre.")]),
-        ]
+        for idx, (segment, row) in enumerate(all_posts):
+            author_code = "platform_trending" if segment == "discover" else row["author"]
+            author = users_by_code[author_code]
+            title = titles_by_name.get(row.get("title"))
+            likes = int(row.get("likes", 0))
+            comments = row.get("comments", [])
 
-        for i, row in enumerate(events_data):
-            actor = users[row["actor"]]
-            title = titles[row["title"]] if row.get("title") else None
             event = create_feed_event(
                 db,
-                actor_user_id=actor.id,
-                team_id=row.get("team"),
+                actor_user_id=author.id,
+                team_id=None,
                 content_title_id=title.id if title else None,
-                event_type=row["event_type"],
+                event_type="sponsored_post" if row.get("sponsored") else "user_post",
                 source_type="demo_seed",
                 source_id=None,
                 payload={
                     "seed_tag": SEED_TAG,
-                    "segment": row["segment"],
-                    "body": row["body"],
-                    "cta": row["cta"],
-                    "action_label": row["action_label"],
+                    "segment": segment,
                     "post_id": row["id"],
+                    "body": row["caption"],
+                    "action_label": "shared a post" if segment == "for_you" else "platform update",
+                    "cta": row.get("cta") or ("See Details" if row.get("title") else "View Post"),
+                    "likes": likes,
+                    "comment_count": len(comments),
+                    "shares": max(1, likes // 40) if likes else 0,
+                    "verified": True if segment == "discover" else bool(row.get("verified", False)),
+                    "sponsored": bool(row.get("sponsored", False)),
+                    "trend_score": min(99, max(0, likes // 200)) if segment == "discover" else 0,
+                    "platform_engagement": likes if segment == "discover" else 0,
                 },
             )
-            event.created_at = now - timedelta(minutes=(len(events_data) - i) * 52)
-            _add_reactions(db, event, row["reactions"], reactors)
-            _add_comments(db, event, users, row["comments"], row["comments_count"])
+            event.created_at = now - timedelta(minutes=(len(all_posts) - idx) * 17)
 
-        watchlist = db.scalar(select(Watchlist).where(Watchlist.owner_user_id == users["Greg Wallace"].id, Watchlist.is_default.is_(True)))
-        if watchlist:
-            for key in ["severance", "succession", "last_of_us"]:
-                title = titles[key]
-                exists = db.scalar(select(WatchlistItem).where(WatchlistItem.watchlist_id == watchlist.id, WatchlistItem.content_title_id == title.id))
-                if exists is None:
-                    db.add(WatchlistItem(watchlist_id=watchlist.id, content_title_id=title.id, added_via="demo_seed"))
+            _add_reactions(db, event, _reaction_counts_from_likes(likes), reactor_pool)
+            _add_comments(db, event, comments, commenter_pool)
 
         db.commit()
     finally:

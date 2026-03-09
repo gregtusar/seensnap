@@ -27,6 +27,7 @@ class WatchlistAddRequest(BaseModel):
     content_title_id: UUID
     list_id: UUID | None = None
     added_via: str = Field(default="manual", min_length=1, max_length=32)
+    share_to_team_id: UUID | None = None
 
 
 class WatchlistListCreateRequest(BaseModel):

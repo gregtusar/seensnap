@@ -35,6 +35,11 @@ class PublicProfileResponse(BaseModel):
     display_name: str
     avatar_url: str | None = None
     bio: str | None = None
+    follower_count: int = 0
+    following_count: int = 0
+    post_count: int = 0
+    is_following: bool = False
+    can_follow: bool = True
 
 
 class PublicProfilePostResponse(BaseModel):

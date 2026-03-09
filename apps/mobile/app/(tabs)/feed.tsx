@@ -24,7 +24,7 @@ import { colors, radii, spacing } from "@/constants/theme";
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, resolveMediaUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 
@@ -61,6 +61,7 @@ type FeedEvent = {
     user_id: string;
     display_name?: string | null;
     avatar_url?: string | null;
+    is_following?: boolean;
   };
   title?: {
     id: string;
@@ -104,7 +105,6 @@ export default function FeedScreen() {
   const [commentsByEvent, setCommentsByEvent] = useState<Record<string, FeedComment[]>>({});
   const [replyDraftByEvent, setReplyDraftByEvent] = useState<Record<string, string>>({});
   const [expandedCommentsByEvent, setExpandedCommentsByEvent] = useState<Record<string, boolean>>({});
-  const [followByActor, setFollowByActor] = useState<Record<string, boolean>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -179,7 +179,7 @@ export default function FeedScreen() {
       setIsLoading(true);
       setError(null);
       try {
-        const data = await apiRequest<FeedEvent[]>(`/feed/${segment}?limit=20`, { token: sessionToken });
+        const data = await apiRequest<FeedEvent[]>(`/feed/${segment}?limit=100`, { token: sessionToken });
         setItems(data);
         const commentPayloads = await Promise.all(
           data.slice(0, 15).map(async (item) => {
@@ -442,8 +442,26 @@ export default function FeedScreen() {
     }
   }
 
-  function toggleFollow(actorUserId: string) {
-    setFollowByActor((current) => ({ ...current, [actorUserId]: !current[actorUserId] }));
+  async function toggleFollow(item: FeedEvent) {
+    if (!sessionToken || item.can_delete) {
+      return;
+    }
+    const currentlyFollowing = Boolean(item.actor.is_following);
+    try {
+      await apiRequest<void>(`/profiles/${item.actor.user_id}/follow`, {
+        method: currentlyFollowing ? "DELETE" : "POST",
+        token: sessionToken,
+      });
+      setItems((current) =>
+        current.map((event) =>
+          event.actor.user_id === item.actor.user_id
+            ? { ...event, actor: { ...event.actor, is_following: !currentlyFollowing } }
+            : event
+        )
+      );
+    } catch (followError) {
+      setError(followError instanceof Error ? followError.message : "Failed to update follow state");
+    }
   }
 
   function animateLayout() {
@@ -553,7 +571,7 @@ export default function FeedScreen() {
                 segment={segment}
                 comments={commentsByEvent[item.id] ?? []}
                 expanded={Boolean(expandedCommentsByEvent[item.id])}
-                followed={Boolean(followByActor[item.actor.user_id])}
+                followed={Boolean(item.actor.is_following)}
                 draft={replyDraftByEvent[item.id] ?? ""}
                 onToggleExpand={() => {
                   animateLayout();
@@ -564,7 +582,7 @@ export default function FeedScreen() {
                 }
                 onSubmitComment={() => void postComment(item.id)}
                 onReact={(reaction) => void react(item, reaction)}
-                onToggleFollow={() => toggleFollow(item.actor.user_id)}
+                onToggleFollow={() => void toggleFollow(item)}
                 onOpenActor={() => router.push(`/profile/${item.actor.user_id}`)}
                 onOpenDetails={() => void openDetails(item)}
                 onOpenComposer={() => openComposer(item, "card")}
@@ -622,6 +640,7 @@ export default function FeedScreen() {
                 <View style={styles.attachedChip}>
                   <PosterThumb
                     uri={attachedTitle.poster_url}
+                    secondaryUri={attachedTitle.backdrop_url}
                     style={styles.attachedPoster}
                     fallbackStyle={styles.attachResultPosterFallback}
                     iconSize={12}
@@ -644,6 +663,7 @@ export default function FeedScreen() {
                 >
                   <PosterThumb
                     uri={candidate.poster_url}
+                    secondaryUri={candidate.backdrop_url}
                     style={styles.attachResultPoster}
                     fallbackStyle={styles.attachResultPosterFallback}
                     iconSize={14}
@@ -765,6 +785,9 @@ function FeedCard({
   onDeletePost: () => void;
   onDeleteComment: (comment: FeedComment) => void;
 }) {
+  const actorName =
+    segment === "discover" ? "Scene Snap Trending" : item.actor.display_name ?? "SeenSnap user";
+  const isVerified = Boolean((item.payload.verified as boolean | undefined) ?? (segment === "discover"));
   const activityLabel =
     (typeof item.payload.action_label === "string" && item.payload.action_label) || typeLabel(item.event_type);
   const ctaLabel = normalizeCta(typeof item.payload.cta === "string" ? item.payload.cta : null);
@@ -803,10 +826,13 @@ function FeedCard({
       <View pointerEvents="none" style={styles.cardInnerGlow} />
       <View style={styles.headerRow}>
         <Pressable onPress={onOpenActor} style={styles.actorTap}>
-          <Avatar uri={item.actor.avatar_url} label={item.actor.display_name ?? "U"} size={40} />
+          <Avatar uri={item.actor.avatar_url} label={actorName} size={40} />
         </Pressable>
         <Pressable onPress={onOpenActor} style={styles.userBlock}>
-          <Text style={styles.userName}>{item.actor.display_name ?? "SeenSnap user"}</Text>
+          <View style={styles.userNameRow}>
+            <Text style={styles.userName}>{actorName}</Text>
+            {isVerified ? <Ionicons name="checkmark-circle" size={14} color={colors.accent} style={styles.verifiedIcon} /> : null}
+          </View>
           <Text style={styles.activityLabel}>{activityLabel}</Text>
         </Pressable>
         <Text style={styles.timeText}>{relativeTime(item.created_at)}</Text>
@@ -837,6 +863,7 @@ function FeedCard({
         >
           <PosterThumb
             uri={item.title?.poster_url}
+            secondaryUri={item.title?.backdrop_url}
             style={styles.poster}
             fallbackStyle={styles.posterFallback}
             iconSize={20}
@@ -1016,11 +1043,15 @@ function CommentRow({
 }
 
 function Avatar({ uri, label, size }: { uri?: string | null; label: string; size: number }) {
-  if (uri) {
+  const resolvedUri = resolveMediaUrl(uri);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const sourceUri = !loadFailed ? resolvedUri : null;
+  if (sourceUri) {
     return (
       <Image
-        source={{ uri }}
+        source={{ uri: sourceUri }}
         style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.backgroundElevated }}
+        onError={() => setLoadFailed(true)}
       />
     );
   }
@@ -1033,24 +1064,38 @@ function Avatar({ uri, label, size }: { uri?: string | null; label: string; size
 
 function PosterThumb({
   uri,
+  secondaryUri,
   style,
   fallbackStyle,
   iconSize,
 }: {
   uri?: string | null;
+  secondaryUri?: string | null;
   style: any;
   fallbackStyle: any;
   iconSize: number;
 }) {
-  const [failed, setFailed] = useState(false);
-  if (!uri || failed) {
+  const [sourceIndex, setSourceIndex] = useState(0);
+  const sources = [
+    resolveMediaUrl(uri),
+    resolveMediaUrl(secondaryUri),
+    resolveMediaUrl("/media/brand/title_placeholder.jpg"),
+  ].filter((entry, idx, arr): entry is string => Boolean(entry) && arr.indexOf(entry) === idx);
+  const activeSource = sources[sourceIndex] ?? null;
+  if (!activeSource) {
     return (
       <View style={fallbackStyle}>
         <Ionicons name="film" size={iconSize} color={colors.muted} />
       </View>
     );
   }
-  return <Image source={{ uri }} style={style} onError={() => setFailed(true)} />;
+  return (
+    <Image
+      source={{ uri: activeSource }}
+      style={style}
+      onError={() => setSourceIndex((current) => Math.min(current + 1, Math.max(0, sources.length - 1)))}
+    />
+  );
 }
 
 function SegmentButton({
@@ -1321,10 +1366,18 @@ const styles = StyleSheet.create({
   userBlock: {
     flex: 1,
   },
+  userNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
   userName: {
     color: colors.ink,
     fontWeight: "800",
     fontSize: 14,
+  },
+  verifiedIcon: {
+    marginTop: 1,
   },
   activityLabel: {
     color: colors.muted,

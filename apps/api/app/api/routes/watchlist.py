@@ -157,7 +157,16 @@ def add_watchlist_item(
         )
         db.add(item)
         db.flush()
-        _log_watchlist_to_teams(db, current_user.id, title, watchlist.name, payload.added_via, item.id)
+        if payload.share_to_team_id is not None:
+            _log_watchlist_to_team(
+                db,
+                user_id=current_user.id,
+                team_id=payload.share_to_team_id,
+                title=title,
+                list_name=watchlist.name,
+                added_via=payload.added_via,
+                entity_id=item.id,
+            )
         db.commit()
     return _watchlist_response(db, watchlist)
 
@@ -226,54 +235,57 @@ def _watchlist_response(db: DbSession, watchlist: Watchlist) -> WatchlistRespons
     )
 
 
-def _log_watchlist_to_teams(
+def _log_watchlist_to_team(
     db: DbSession,
     user_id: UUID,
+    team_id: UUID,
     title: ContentTitle,
     list_name: str,
     added_via: str,
     entity_id: UUID,
 ) -> None:
-    team_ids = db.scalars(
-        select(TeamMember.team_id)
+    membership = db.scalar(
+        select(TeamMember)
         .join(Team, Team.id == TeamMember.team_id)
         .where(
+            TeamMember.team_id == team_id,
             TeamMember.user_id == user_id,
             TeamMember.status == "active",
             Team.archived_at.is_(None),
         )
-    ).all()
-    for team_id in team_ids:
-        log_team_activity(
-            db,
-            team_id=team_id,
-            actor_user_id=user_id,
-            activity_type="watchlist_item_added",
-            content_title_id=title.id,
-            entity_id=entity_id,
-            payload={
-                "title_name": title.title,
-                "content_type": title.content_type,
-                "list_name": list_name,
-                "added_via": added_via,
-            },
-        )
-        create_feed_event(
-            db,
-            actor_user_id=user_id,
-            team_id=team_id,
-            content_title_id=title.id,
-            event_type="watchlist_item_added",
-            source_type="watchlist_item",
-            source_id=entity_id,
-            payload={
-                "title_name": title.title,
-                "content_type": title.content_type,
-                "list_name": list_name,
-                "added_via": added_via,
-                "cta": "add_to_watchlist",
-            },
-        )
+    )
+    if membership is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a member of selected Watch Team")
+    log_team_activity(
+        db,
+        team_id=team_id,
+        actor_user_id=user_id,
+        activity_type="watchlist_item_added",
+        content_title_id=title.id,
+        entity_id=entity_id,
+        payload={
+            "title_name": title.title,
+            "content_type": title.content_type,
+            "list_name": list_name,
+            "added_via": added_via,
+        },
+    )
+    create_feed_event(
+        db,
+        actor_user_id=user_id,
+        team_id=team_id,
+        content_title_id=title.id,
+        event_type="watchlist_item_added",
+        source_type="watchlist_item",
+        source_id=entity_id,
+        payload={
+            "title_name": title.title,
+            "content_type": title.content_type,
+            "list_name": list_name,
+            "added_via": added_via,
+            "cta": "add_to_watchlist",
+        },
+    )
 
 
 def _title_response(title: ContentTitle) -> TitleResponse:

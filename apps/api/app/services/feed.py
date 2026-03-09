@@ -9,8 +9,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentTitle
-from app.models.social import FeedComment, FeedEvent, FeedReaction, Team, TeamMember
+from app.models.social import FeedComment, FeedEvent, FeedReaction, Team, TeamMember, UserFollow
 from app.models.user import UserProfile
+from app.services.follows import ensure_follows_table
 
 
 VALID_REACTIONS = {"fire", "heart", "thumbs_down", "tomato"}
@@ -204,6 +205,7 @@ def list_comments(db: Session, event_id: UUID) -> list[FeedComment]:
 
 
 def list_feed_for_you(db: Session, user_id: UUID, limit: int = 50) -> list[FeedEvent]:
+    ensure_follows_table(db)
     team_ids = list_user_team_ids(db, user_id)
     segment = FeedEvent.payload["segment"].astext
     events = db.scalars(
@@ -246,8 +248,12 @@ def list_feed_discover(db: Session, limit: int = 50) -> list[FeedEvent]:
 def _sort_for_you(db: Session, user_id: UUID, team_ids: list[UUID], events: list[FeedEvent]) -> list[FeedEvent]:
     if not events:
         return []
+    ensure_follows_table(db)
 
     actor_ids = {event.actor_user_id for event in events}
+    following_ids = set(
+        db.scalars(select(UserFollow.following_user_id).where(UserFollow.follower_user_id == user_id)).all()
+    )
     shared_counts: dict[UUID, int] = {}
     if team_ids and actor_ids:
         rows = db.execute(
@@ -272,8 +278,9 @@ def _sort_for_you(db: Session, user_id: UUID, team_ids: list[UUID], events: list
         recency_score = max(72.0 - age_hours, 0.0)
         engagement = reaction_counts.get(event.id, 0) + comment_counts.get(event.id, 0)
         relationship = shared_counts.get(event.actor_user_id, 0)
+        following_boost = 9.0 if event.actor_user_id in following_ids else 0.0
         self_boost = 4.0 if event.actor_user_id == user_id else 0.0
-        return recency_score + engagement * 3.0 + relationship * 2.0 + self_boost
+        return recency_score + engagement * 3.0 + relationship * 2.0 + following_boost + self_boost
 
     return sorted(events, key=lambda e: (score(e), e.created_at), reverse=True)
 
@@ -282,7 +289,15 @@ def build_feed_response_data(
     db: Session,
     events: list[FeedEvent],
     viewer_user_id: UUID,
-) -> tuple[dict[UUID, UserProfile], dict[UUID, ContentTitle], dict[UUID, Counter], dict[UUID, str], dict[UUID, int]]:
+) -> tuple[
+    dict[UUID, UserProfile],
+    dict[UUID, ContentTitle],
+    dict[UUID, Counter],
+    dict[UUID, str],
+    dict[UUID, int],
+    set[UUID],
+]:
+    ensure_follows_table(db)
     event_ids = [event.id for event in events]
     actor_ids = {event.actor_user_id for event in events}
     title_ids = {event.content_title_id for event in events if event.content_title_id is not None}
@@ -306,10 +321,14 @@ def build_feed_response_data(
             my_reactions[reaction.event_id] = reaction.reaction
 
     comment_counts = {event_id: count for event_id, count in comments}
+    following_ids = set(
+        db.scalars(select(UserFollow.following_user_id).where(UserFollow.follower_user_id == viewer_user_id)).all()
+    )
     return (
         {profile.user_id: profile for profile in profiles},
         {title.id: title for title in titles},
         reaction_counts,
         my_reactions,
         comment_counts,
+        following_ids,
     )

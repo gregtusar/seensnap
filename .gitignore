@@ -17,6 +17,7 @@ node_modules/
 .expo-shared/
 apps/api/alembic/versions/*.pyc
 apps/mobile/.npm/
+apps/api/uploads/
 .terraform/
 *.tfstate
 *.tfstate.*

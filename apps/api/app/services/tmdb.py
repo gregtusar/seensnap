@@ -166,3 +166,167 @@ def refresh_streaming_options(db: Session, title: ContentTitle) -> list[ContentA
 
     db.commit()
     return created
+
+
+def fetch_related_titles(db: Session, title: ContentTitle, limit: int = 10) -> list[ContentTitle]:
+    endpoint_root = "movie" if title.content_type == "movie" else "tv"
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+        rec_response = client.get(
+            f"/{endpoint_root}/{title.tmdb_id}/recommendations",
+            params={"language": "en-US", "page": 1},
+        )
+        rec_response.raise_for_status()
+        sim_response = client.get(
+            f"/{endpoint_root}/{title.tmdb_id}/similar",
+            params={"language": "en-US", "page": 1},
+        )
+        sim_response.raise_for_status()
+
+    hydrated: list[ContentTitle] = []
+    seen_tmdb_ids: set[int] = set()
+    for item in [*rec_response.json().get("results", []), *sim_response.json().get("results", [])]:
+        tmdb_id = item.get("id")
+        if not isinstance(tmdb_id, int) or tmdb_id in seen_tmdb_ids:
+            continue
+        seen_tmdb_ids.add(tmdb_id)
+        item["media_type"] = "movie" if endpoint_root == "movie" else "tv"
+        row = _upsert_title_from_tmdb_result(db, item)
+        if row is not None:
+            hydrated.append(row)
+        if len(hydrated) >= limit:
+            break
+
+    db.commit()
+    return hydrated
+
+
+def fetch_trending_titles(db: Session, limit: int = 20) -> list[ContentTitle]:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+        response = client.get("/trending/all/week", params={"language": "en-US"})
+        response.raise_for_status()
+
+    hydrated: list[ContentTitle] = []
+    for item in response.json().get("results", []):
+        row = _upsert_title_from_tmdb_result(db, item)
+        if row is not None:
+            hydrated.append(row)
+        if len(hydrated) >= limit:
+            break
+    db.commit()
+    return hydrated
+
+
+def list_tmdb_genres() -> list[str]:
+    movie_map = _fetch_genre_map("movie")
+    tv_map = _fetch_genre_map("tv")
+    merged = sorted({*movie_map.values(), *tv_map.values()})
+    return merged
+
+
+def discover_titles_by_genre(
+    db: Session,
+    genre: str,
+    media_type: str = "all",
+    limit: int = 40,
+) -> list[ContentTitle]:
+    genre = genre.strip().lower()
+    if not genre:
+        return []
+
+    requested = {"all", "movie", "show"}
+    if media_type not in requested:
+        media_type = "all"
+
+    movie_map = _fetch_genre_map("movie")
+    tv_map = _fetch_genre_map("tv")
+    movie_id = _match_genre_id(movie_map, genre)
+    tv_id = _match_genre_id(tv_map, genre)
+
+    if media_type == "movie" and movie_id is None:
+        return []
+    if media_type == "show" and tv_id is None:
+        return []
+    if media_type == "all" and movie_id is None and tv_id is None:
+        return []
+
+    fetched: list[ContentTitle] = []
+    seen_tmdb_ids: set[int] = set()
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+        if media_type in {"all", "movie"} and movie_id is not None:
+            response = client.get(
+                "/discover/movie",
+                params={
+                    "language": "en-US",
+                    "sort_by": "popularity.desc",
+                    "include_adult": "false",
+                    "include_video": "false",
+                    "with_genres": str(movie_id),
+                    "page": 1,
+                },
+            )
+            response.raise_for_status()
+            for item in response.json().get("results", []):
+                tmdb_id = item.get("id")
+                if not isinstance(tmdb_id, int) or tmdb_id in seen_tmdb_ids:
+                    continue
+                seen_tmdb_ids.add(tmdb_id)
+                item["media_type"] = "movie"
+                item["genres"] = [
+                    {"name": movie_map[g]} for g in item.get("genre_ids", []) if isinstance(g, int) and g in movie_map
+                ]
+                hydrated = _upsert_title_from_tmdb_result(db, item)
+                if hydrated is not None:
+                    fetched.append(hydrated)
+                if len(fetched) >= limit:
+                    db.commit()
+                    return fetched[:limit]
+
+        if media_type in {"all", "show"} and tv_id is not None:
+            response = client.get(
+                "/discover/tv",
+                params={
+                    "language": "en-US",
+                    "sort_by": "popularity.desc",
+                    "include_adult": "false",
+                    "with_genres": str(tv_id),
+                    "page": 1,
+                },
+            )
+            response.raise_for_status()
+            for item in response.json().get("results", []):
+                tmdb_id = item.get("id")
+                if not isinstance(tmdb_id, int) or tmdb_id in seen_tmdb_ids:
+                    continue
+                seen_tmdb_ids.add(tmdb_id)
+                item["media_type"] = "tv"
+                item["genres"] = [
+                    {"name": tv_map[g]} for g in item.get("genre_ids", []) if isinstance(g, int) and g in tv_map
+                ]
+                hydrated = _upsert_title_from_tmdb_result(db, item)
+                if hydrated is not None:
+                    fetched.append(hydrated)
+                if len(fetched) >= limit:
+                    db.commit()
+                    return fetched[:limit]
+
+    db.commit()
+    return fetched[:limit]
+
+
+def _fetch_genre_map(kind: str) -> dict[int, str]:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+        response = client.get(f"/genre/{kind}/list", params={"language": "en-US"})
+        response.raise_for_status()
+    return {
+        int(item["id"]): str(item["name"])
+        for item in response.json().get("genres", [])
+        if isinstance(item, dict) and isinstance(item.get("id"), int) and isinstance(item.get("name"), str)
+    }
+
+
+def _match_genre_id(mapping: dict[int, str], target: str) -> int | None:
+    normalized = target.lower()
+    for genre_id, name in mapping.items():
+        if name.lower() == normalized:
+            return genre_id
+    return None

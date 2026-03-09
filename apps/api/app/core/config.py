@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     google_oauth_client_id: str = ""
     app_auth_secret: str = "replace-me"
     app_auth_audience: str = "seensnap-mobile"
+    uploads_dir: str = "uploads"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

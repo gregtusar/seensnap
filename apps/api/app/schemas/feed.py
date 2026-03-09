@@ -10,6 +10,7 @@ class FeedActorResponse(BaseModel):
     user_id: UUID
     display_name: str | None = None
     avatar_url: str | None = None
+    is_following: bool = False
 
 
 class FeedEventResponse(BaseModel):

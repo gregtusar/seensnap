@@ -2,14 +2,19 @@ from datetime import date
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 
-from app.api.dependencies import DbSession
+from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentAvailability, ContentTitle
-from app.schemas.content import StreamingOptionResponse, TitleResponse
+from app.models.social import Watchlist, WatchlistItem
+from app.schemas.content import RecommendationResponse, StreamingOptionResponse, TitleResponse
 from app.services.tmdb import (
     TmdbConfigurationError,
+    discover_titles_by_genre,
+    list_tmdb_genres,
+    fetch_related_titles,
+    fetch_trending_titles,
     refresh_streaming_options,
     refresh_title_details,
     search_titles as tmdb_search_titles,
@@ -25,6 +30,28 @@ def search_titles(q: str, db: DbSession) -> list[TitleResponse]:
         return []
     try:
         titles = tmdb_search_titles(db, q)
+    except TmdbConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return [_to_title_response(title) for title in titles]
+
+
+@router.get("/genres", response_model=list[str])
+def get_genres() -> list[str]:
+    try:
+        return list_tmdb_genres()
+    except TmdbConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.get("/discover", response_model=list[TitleResponse])
+def discover_titles(
+    genre: str,
+    db: DbSession,
+    media_type: str = Query(default="all", pattern="^(all|movie|show)$"),
+    limit: int = Query(default=30, ge=6, le=60),
+) -> list[TitleResponse]:
+    try:
+        titles = discover_titles_by_genre(db, genre=genre, media_type=media_type, limit=limit)
     except TmdbConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return [_to_title_response(title) for title in titles]
@@ -62,6 +89,84 @@ def get_streaming_options(title_id: UUID, db: DbSession) -> list[StreamingOption
     except TmdbConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return [_to_streaming_response(option) for option in options]
+
+
+@router.get("/recommendations/for-me", response_model=list[RecommendationResponse])
+def get_my_recommendations(
+    current_user: CurrentUser,
+    db: DbSession,
+    limit: int = Query(default=24, ge=6, le=60),
+    preferred_type: str | None = Query(default=None, pattern="^(movie|show)$"),
+) -> list[RecommendationResponse]:
+    saved_ids = db.scalars(
+        select(WatchlistItem.content_title_id)
+        .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
+        .where(Watchlist.owner_user_id == current_user.id)
+    ).all()
+    saved_set = set(saved_ids)
+    seed_titles = db.scalars(
+        select(ContentTitle)
+        .where(ContentTitle.id.in_(saved_set))
+        .order_by(ContentTitle.release_date.desc())
+        .limit(8)
+    ).all() if saved_set else []
+
+    ranked: dict[UUID, dict] = {}
+    try:
+        if seed_titles:
+            for seed in seed_titles:
+                related = fetch_related_titles(db, seed, limit=12)
+                for idx, candidate in enumerate(related):
+                    if candidate.id in saved_set:
+                        continue
+                    weight = max(12 - idx, 1)
+                    entry = ranked.setdefault(
+                        candidate.id,
+                        {"title": candidate, "score": 0, "seed": seed, "occurrences": 0},
+                    )
+                    entry["score"] += weight
+                    entry["occurrences"] += 1
+
+            chosen = sorted(
+                ranked.values(),
+                key=lambda item: (
+                    item["score"],
+                    item["occurrences"],
+                    float(item["title"].tmdb_vote_average or 0),
+                ),
+                reverse=True,
+            )
+            if preferred_type == "movie":
+                chosen = [item for item in chosen if item["title"].content_type == "movie"]
+            elif preferred_type == "show":
+                chosen = [item for item in chosen if item["title"].content_type == "series"]
+            chosen = chosen[:limit]
+            if chosen:
+                return [
+                    RecommendationResponse(
+                        title=_to_title_response(item["title"]),
+                        reason=f"Because you saved {item['seed'].title}",
+                        seed_title_id=item["seed"].id,
+                    )
+                    for item in chosen
+                ]
+        trending = fetch_trending_titles(db, limit=limit * 2)
+        fallback = [title for title in trending if title.id not in saved_set]
+        if preferred_type == "movie":
+            fallback = [title for title in fallback if title.content_type == "movie"]
+        elif preferred_type == "show":
+            fallback = [title for title in fallback if title.content_type == "series"]
+        fallback = fallback[:limit]
+        return [
+            RecommendationResponse(
+                title=_to_title_response(title),
+                reason="Trending right now",
+                seed_title_id=None,
+            )
+            for title in fallback
+        ]
+    except TmdbConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
 def _to_title_response(title: ContentTitle, wikipedia_metadata=None) -> TitleResponse:

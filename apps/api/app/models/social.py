@@ -157,6 +157,16 @@ class FeedReaction(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class UserFollow(Base):
+    __tablename__ = "user_follows"
+    __table_args__ = (UniqueConstraint("follower_user_id", "following_user_id", name="uq_user_follow"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    follower_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    following_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class FeedComment(Base):
     __tablename__ = "feed_comments"
 

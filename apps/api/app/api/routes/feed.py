@@ -223,7 +223,7 @@ def delete_my_feed_comment(comment_id: UUID, current_user: CurrentUser, db: DbSe
 def _feed_response(events: list[FeedEvent], db: DbSession, viewer_user_id: UUID) -> list[FeedEventResponse]:
     if not events:
         return []
-    profiles, titles, reaction_counts, my_reactions, comment_counts = build_feed_response_data(
+    profiles, titles, reaction_counts, my_reactions, comment_counts, following_ids = build_feed_response_data(
         db, events, viewer_user_id
     )
     return [
@@ -241,6 +241,7 @@ def _feed_response(events: list[FeedEvent], db: DbSession, viewer_user_id: UUID)
                 avatar_url=profiles.get(event.actor_user_id).avatar_url
                 if profiles.get(event.actor_user_id)
                 else None,
+                is_following=event.actor_user_id in following_ids,
             ),
             title=_to_title_response(titles[event.content_title_id])
             if event.content_title_id in titles
@@ -274,6 +275,12 @@ def _to_title_response(title) -> TitleResponse:
         for person in cast
         if isinstance(person, dict) and person.get("name")
     ][:5]
+    poster_url = title.poster_url or "/media/brand/title_placeholder.jpg"
+    if "seensnap_logo" in poster_url:
+        poster_url = "/media/brand/title_placeholder.jpg"
+    backdrop_url = title.backdrop_url or poster_url
+    if backdrop_url and "seensnap_logo" in backdrop_url:
+        backdrop_url = poster_url
     return TitleResponse(
         id=title.id,
         tmdb_id=title.tmdb_id,
@@ -281,8 +288,8 @@ def _to_title_response(title) -> TitleResponse:
         title=title.title,
         original_title=title.original_title,
         overview=title.overview,
-        poster_url=title.poster_url,
-        backdrop_url=title.backdrop_url,
+        poster_url=poster_url,
+        backdrop_url=backdrop_url,
         genres=title.genres,
         release_date=title.release_date,
         runtime_minutes=title.runtime_minutes,

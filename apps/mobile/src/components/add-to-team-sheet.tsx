@@ -27,7 +27,7 @@ export function AddToTeamSheet({ visible, token, title, onClose, onAdded, onErro
   const [teams, setTeams] = useState<TeamSummary[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [note, setNote] = useState("");
-  const [alsoPost, setAlsoPost] = useState(true);
+  const [alsoPost, setAlsoPost] = useState(false);
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -70,7 +70,7 @@ export function AddToTeamSheet({ visible, token, title, onClose, onAdded, onErro
       });
       const teamName = selectedTeam?.name ?? "team";
       setNote("");
-      setAlsoPost(true);
+      setAlsoPost(false);
       onAdded?.(teamName);
       onClose();
     } catch (error) {

@@ -20,13 +20,26 @@ function resolveApiBaseUrl() {
 
 const apiBaseUrl = resolveApiBaseUrl();
 
+function resolveApiOrigin() {
+  try {
+    return new URL(apiBaseUrl).origin;
+  } catch {
+    return "http://127.0.0.1:8000";
+  }
+}
+
+const apiOrigin = resolveApiOrigin();
+
 type ApiRequestOptions = RequestInit & {
   token?: string | null;
 };
 
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const headers = new Headers(options.headers);
-  headers.set("Content-Type", "application/json");
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
+  if (!headers.has("Content-Type") && !isFormData) {
+    headers.set("Content-Type", "application/json");
+  }
 
   if (options.token) {
     headers.set("Authorization", `Bearer ${options.token}`);
@@ -47,4 +60,17 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   }
 
   return (await response.json()) as T;
+}
+
+export function resolveMediaUrl(uri?: string | null): string | null {
+  if (!uri) {
+    return null;
+  }
+  if (uri.startsWith("http://") || uri.startsWith("https://")) {
+    return uri;
+  }
+  if (uri.startsWith("/")) {
+    return `${apiOrigin}${uri}`;
+  }
+  return `${apiOrigin}/${uri}`;
 }

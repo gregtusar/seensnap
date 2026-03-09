@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
 import { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -54,7 +55,8 @@ export default function ProfileScreen() {
   const [draftDisplayName, setDraftDisplayName] = useState("");
   const [draftUsername, setDraftUsername] = useState("");
   const [draftBio, setDraftBio] = useState("");
-  const [draftAvatarUrl, setDraftAvatarUrl] = useState("");
+  const [draftAvatarUri, setDraftAvatarUri] = useState<string | null>(null);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
 
   const bioCount = draftBio.length;
   const canSave = Boolean(draftDisplayName.trim() && draftUsername.trim().length >= 3 && bioCount <= 280);
@@ -91,7 +93,7 @@ export default function ProfileScreen() {
     setDraftDisplayName(profile.display_name);
     setDraftUsername(profile.username);
     setDraftBio(profile.bio ?? "");
-    setDraftAvatarUrl(profile.avatar_url ?? "");
+    setDraftAvatarUri(profile.avatar_url ?? null);
     setShowEdit(true);
   }
 
@@ -109,7 +111,6 @@ export default function ProfileScreen() {
           display_name: draftDisplayName.trim(),
           username: draftUsername.trim().toLowerCase(),
           bio: draftBio.trim() || null,
-          avatar_url: draftAvatarUrl.trim() || null,
         }),
       });
       setProfile(updated);
@@ -124,6 +125,81 @@ export default function ProfileScreen() {
       setError(saveError instanceof Error ? saveError.message : "Failed to save profile");
     } finally {
       setIsSaving(false);
+    }
+  }
+
+  async function pickAvatarImage() {
+    if (!sessionToken || isUploadingAvatar) {
+      return;
+    }
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert("Photos access needed", "Allow photo access to upload a profile picture.");
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+      if (result.canceled || !result.assets.length) {
+        return;
+      }
+      const asset = result.assets[0];
+      const filename = asset.fileName || `avatar-${Date.now()}.jpg`;
+      const mime = asset.mimeType || "image/jpeg";
+      const form = new FormData();
+      form.append("file", {
+        uri: asset.uri,
+        name: filename,
+        type: mime,
+      } as any);
+      setIsUploadingAvatar(true);
+      const updated = await apiRequest<Profile>("/me/avatar", {
+        method: "POST",
+        token: sessionToken,
+        body: form,
+      });
+      setProfile(updated);
+      setDraftAvatarUri(updated.avatar_url ?? null);
+      await updateSessionUser({
+        display_name: updated.display_name,
+        avatar_url: updated.avatar_url ?? null,
+      });
+      setToast("Profile photo updated");
+      setTimeout(() => setToast(null), 1800);
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "Could not upload photo");
+    } finally {
+      setIsUploadingAvatar(false);
+    }
+  }
+
+  async function removeAvatar() {
+    if (!sessionToken || isUploadingAvatar) {
+      return;
+    }
+    setIsUploadingAvatar(true);
+    setError(null);
+    try {
+      const updated = await apiRequest<Profile>("/me/avatar", {
+        method: "DELETE",
+        token: sessionToken,
+      });
+      setProfile(updated);
+      setDraftAvatarUri(null);
+      await updateSessionUser({
+        display_name: updated.display_name,
+        avatar_url: null,
+      });
+      setToast("Profile photo removed");
+      setTimeout(() => setToast(null), 1800);
+    } catch (removeError) {
+      setError(removeError instanceof Error ? removeError.message : "Could not remove photo");
+    } finally {
+      setIsUploadingAvatar(false);
     }
   }
 
@@ -186,6 +262,25 @@ export default function ProfileScreen() {
           <View style={styles.modalSheet}>
             <Text style={styles.modalTitle}>Edit Profile</Text>
             <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.modalBody}>
+              <View style={styles.avatarEditor}>
+                <Avatar uri={draftAvatarUri} label={draftDisplayName || profile?.display_name || "You"} size={72} />
+                <View style={styles.avatarActions}>
+                  <Pressable
+                    style={[styles.avatarButton, isUploadingAvatar && styles.modalSaveDisabled]}
+                    disabled={isUploadingAvatar}
+                    onPress={() => void pickAvatarImage()}
+                  >
+                    <Text style={styles.avatarButtonText}>{isUploadingAvatar ? "Uploading..." : "Upload Photo"}</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.avatarGhostButton, (!draftAvatarUri || isUploadingAvatar) && styles.modalSaveDisabled]}
+                    disabled={!draftAvatarUri || isUploadingAvatar}
+                    onPress={() => void removeAvatar()}
+                  >
+                    <Text style={styles.avatarGhostButtonText}>Remove Photo</Text>
+                  </Pressable>
+                </View>
+              </View>
               <Text style={styles.inputLabel}>Display Name</Text>
               <TextInput
                 style={styles.input}
@@ -201,15 +296,6 @@ export default function ProfileScreen() {
                 value={draftUsername}
                 onChangeText={setDraftUsername}
                 placeholder="username"
-                placeholderTextColor={colors.muted}
-                autoCapitalize="none"
-              />
-              <Text style={styles.inputLabel}>Avatar URL</Text>
-              <TextInput
-                style={styles.input}
-                value={draftAvatarUrl}
-                onChangeText={setDraftAvatarUrl}
-                placeholder="https://..."
                 placeholderTextColor={colors.muted}
                 autoCapitalize="none"
               />
@@ -462,6 +548,45 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 1,
     marginTop: 6,
+  },
+  avatarEditor: {
+    marginBottom: spacing.xs,
+    padding: spacing.sm,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.backgroundElevated,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+  },
+  avatarActions: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  avatarButton: {
+    borderRadius: radii.pill,
+    backgroundColor: colors.accent,
+    paddingVertical: 10,
+    alignItems: "center",
+  },
+  avatarButtonText: {
+    color: colors.background,
+    fontWeight: "800",
+    fontSize: 12,
+  },
+  avatarGhostButton: {
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
+    paddingVertical: 9,
+    alignItems: "center",
+  },
+  avatarGhostButtonText: {
+    color: colors.ink,
+    fontWeight: "700",
+    fontSize: 12,
   },
   input: {
     borderWidth: 1,

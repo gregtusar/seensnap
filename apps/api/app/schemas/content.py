@@ -35,3 +35,9 @@ class StreamingOptionResponse(BaseModel):
     deeplink_url: str | None = None
     web_url: str | None = None
     is_connected_priority: bool
+
+
+class RecommendationResponse(BaseModel):
+    title: TitleResponse
+    reason: str
+    seed_title_id: UUID | None = None
