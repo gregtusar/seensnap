@@ -3,6 +3,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.schemas.taste import TeamAnalyticsResponse
+
 
 class TeamCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
@@ -53,6 +55,7 @@ class TeamSummaryResponse(BaseModel):
 
 class TeamResponse(TeamSummaryResponse):
     members: list[TeamMemberSummaryResponse]
+    analytics: TeamAnalyticsResponse | None = None
 
 
 class TeamTitleResponse(BaseModel):

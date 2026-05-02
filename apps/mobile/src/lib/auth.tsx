@@ -12,6 +12,8 @@ WebBrowser.maybeCompleteAuthSession();
 const SESSION_TOKEN_KEY = "session_token";
 const SESSION_USER_KEY = "session_user";
 const EXPO_PROXY_REDIRECT_URI = "https://auth.expo.io/@gregtusar/seensnap";
+const DEMO_EMAILS = new Set(["demo@seensnap.app", "seensnap.demo@demo.seensnap.local"]);
+const DEMO_SESSION_TOKEN = "expo-go-demo-session";
 
 type SessionUser = {
   user_id: string;
@@ -24,6 +26,13 @@ type SessionResponse = {
   access_token: string;
   token_type: "bearer";
   user: SessionUser;
+};
+
+const EXPO_GO_FALLBACK_USER: SessionUser = {
+  user_id: "expo-demo",
+  email: "seensnap.demo@demo.seensnap.local",
+  display_name: "SeenSnap Demo",
+  avatar_url: null,
 };
 
 type AuthContextValue = {
@@ -62,50 +71,110 @@ export function AuthProvider({ children }: PropsWithChildren) {
     webClientId: webClientId ?? "dev-placeholder",
   });
 
+  async function requestDemoSession(): Promise<SessionResponse> {
+    const user = await apiRequest<SessionUser>("/auth/me", { token: DEMO_SESSION_TOKEN });
+    return {
+      access_token: DEMO_SESSION_TOKEN,
+      token_type: "bearer",
+      user,
+    };
+  }
+
+  async function persistSession(session: SessionResponse) {
+    await SecureStore.setItemAsync(SESSION_TOKEN_KEY, session.access_token);
+    await SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(session.user));
+  }
+
   useEffect(() => {
     async function loadSession() {
-      const [storedTokenRaw, storedUserJson] = await Promise.all([
-        SecureStore.getItemAsync(SESSION_TOKEN_KEY),
-        SecureStore.getItemAsync(SESSION_USER_KEY),
-      ]);
-      let storedToken = storedTokenRaw;
-      let storedUser: SessionUser | null = null;
-      if (storedUserJson) {
-        try {
-          storedUser = JSON.parse(storedUserJson) as SessionUser;
-        } catch {
-          storedUser = null;
-        }
-      }
-      if (storedUser?.email === "demo@seensnap.app") {
-        try {
-          const session = await apiRequest<SessionResponse>("/auth/dev", {
-            method: "POST",
-            body: JSON.stringify({ email: "seensnap.demo@demo.seensnap.local", display_name: "SeenSnap Demo" }),
+      try {
+        if (isExpoGo) {
+          setSessionToken(DEMO_SESSION_TOKEN);
+          setUser(EXPO_GO_FALLBACK_USER);
+          await persistSession({
+            access_token: DEMO_SESSION_TOKEN,
+            token_type: "bearer",
+            user: EXPO_GO_FALLBACK_USER,
           });
-          storedToken = session.access_token;
-          storedUser = session.user;
-          await SecureStore.setItemAsync(SESSION_TOKEN_KEY, session.access_token);
-          await SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(session.user));
-        } catch {
-          // Keep existing session if migration fails.
+          try {
+            const session = await requestDemoSession();
+            setSessionToken(session.access_token);
+            setUser(session.user);
+            await persistSession(session);
+          } catch {
+            // Keep the built-in demo token and fallback identity so Expo Go can still enter the app.
+          }
+          return;
         }
-      }
-      if (storedToken && !storedUser) {
-        try {
-          storedUser = await apiRequest<SessionUser>("/auth/me", { token: storedToken });
-          await SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(storedUser));
-        } catch {
-          storedUser = null;
+        const [storedTokenRaw, storedUserJson] = await Promise.all([
+          SecureStore.getItemAsync(SESSION_TOKEN_KEY),
+          SecureStore.getItemAsync(SESSION_USER_KEY),
+        ]);
+        let storedToken = storedTokenRaw;
+        let storedUser: SessionUser | null = null;
+        if (storedUserJson) {
+          try {
+            storedUser = JSON.parse(storedUserJson) as SessionUser;
+          } catch {
+            storedUser = null;
+          }
         }
+        if (storedUser?.email && DEMO_EMAILS.has(storedUser.email)) {
+          try {
+            const session = await requestDemoSession();
+            await persistSession(session);
+            storedToken = session.access_token;
+            storedUser = session.user;
+          } catch {
+            // Keep existing session if migration fails.
+          }
+        }
+        if (storedToken) {
+          try {
+            const verifiedUser = await apiRequest<SessionUser>("/auth/me", { token: storedToken });
+            storedUser = verifiedUser;
+            await SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(storedUser));
+          } catch {
+            if (storedUser?.email && DEMO_EMAILS.has(storedUser.email)) {
+              try {
+                const session = await requestDemoSession();
+                await persistSession(session);
+                storedToken = session.access_token;
+                storedUser = session.user;
+              } catch {
+                storedToken = null;
+                storedUser = null;
+                await Promise.all([
+                  SecureStore.deleteItemAsync(SESSION_TOKEN_KEY),
+                  SecureStore.deleteItemAsync(SESSION_USER_KEY),
+                ]);
+              }
+            } else {
+              storedToken = null;
+              storedUser = null;
+              await Promise.all([
+                SecureStore.deleteItemAsync(SESSION_TOKEN_KEY),
+                SecureStore.deleteItemAsync(SESSION_USER_KEY),
+              ]);
+            }
+          }
+        }
+        setSessionToken(storedToken);
+        setUser(storedUser);
+      } catch {
+        await Promise.allSettled([
+          SecureStore.deleteItemAsync(SESSION_TOKEN_KEY),
+          SecureStore.deleteItemAsync(SESSION_USER_KEY),
+        ]);
+        setSessionToken(null);
+        setUser(null);
+      } finally {
+        setIsLoading(false);
       }
-      setSessionToken(storedToken);
-      setUser(storedUser);
-      setIsLoading(false);
     }
 
     void loadSession();
-  }, []);
+  }, [isExpoGo]);
 
   useEffect(() => {
     async function exchangeToken() {
@@ -155,14 +224,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const signInDemo = async () => {
     setIsLoading(true);
     try {
-      const session = await apiRequest<SessionResponse>("/auth/dev", {
-        method: "POST",
-        body: JSON.stringify({ email: "seensnap.demo@demo.seensnap.local", display_name: "SeenSnap Demo" }),
-      });
-      await SecureStore.setItemAsync(SESSION_TOKEN_KEY, session.access_token);
-      await SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(session.user));
+      const session = await requestDemoSession();
       setSessionToken(session.access_token);
       setUser(session.user);
+      await persistSession(session);
     } finally {
       setIsLoading(false);
     }
@@ -181,9 +246,18 @@ export function AuthProvider({ children }: PropsWithChildren) {
     if (!sessionToken) {
       return;
     }
-    const nextUser = await apiRequest<SessionUser>("/auth/me", { token: sessionToken });
-    await SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(nextUser));
-    setUser(nextUser);
+    try {
+      const nextUser = await apiRequest<SessionUser>("/auth/me", { token: sessionToken });
+      await SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(nextUser));
+      setUser(nextUser);
+    } catch {
+      await Promise.all([
+        SecureStore.deleteItemAsync(SESSION_TOKEN_KEY),
+        SecureStore.deleteItemAsync(SESSION_USER_KEY),
+      ]);
+      setSessionToken(null);
+      setUser(null);
+    }
   };
 
   const updateSessionUser = async (next: Partial<SessionUser>) => {

@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
@@ -16,7 +17,7 @@ import {
   View,
 } from "react-native";
 
-import { apiRequest } from "@/lib/api";
+import { apiRequest, resolveMediaUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { colors, radii, spacing } from "@/constants/theme";
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
@@ -89,6 +90,7 @@ type EditorialItem = {
   id: string;
   title: string;
   mediaType: "movie" | "show";
+  poster: string;
   year: number;
   genre: string;
   description: string;
@@ -98,11 +100,17 @@ type DoubleFeatureItem = {
   id: string;
   leftTitle: string;
   leftType: "movie" | "show";
+  leftPoster: string;
   rightTitle: string;
   rightType: "movie" | "show";
+  rightPoster: string;
   genre: string;
   description: string;
 };
+
+function titleKey(name: string, type: "movie" | "show") {
+  return `${name.toLowerCase()}::${type}`;
+}
 
 const TRENDING_SEED: TrendingSeedItem[] = [
   {
@@ -356,32 +364,103 @@ const MOVIE_SMART_PICKS: SmartRecommendationSeed[] = [
 ];
 
 const AWARDS_SEASON_ITEMS: EditorialItem[] = [
-  { id: "aw_oppenheimer", title: "Oppenheimer", mediaType: "movie", year: 2023, genre: "Drama", description: "Awards frontrunner for direction, performance, and technical scale." },
-  { id: "aw_poor_things", title: "Poor Things", mediaType: "movie", year: 2023, genre: "Surreal Prestige", description: "Surreal prestige cinema driven by bold performances and design." },
-  { id: "aw_anatomy_of_a_fall", title: "Anatomy of a Fall", mediaType: "movie", year: 2023, genre: "Courtroom Drama", description: "Courtroom drama with critical acclaim and standout acting." },
-  { id: "aw_holdovers", title: "The Holdovers", mediaType: "movie", year: 2023, genre: "Period Drama", description: "Character-driven period drama fueled by performance and writing." },
-  { id: "aw_past_lives", title: "Past Lives", mediaType: "movie", year: 2023, genre: "Drama", description: "Emotional indie drama anchored by subtle, powerful performances." },
-  { id: "aw_killers", title: "Killers of the Flower Moon", mediaType: "movie", year: 2023, genre: "Historical Crime", description: "Epic historical crime drama with heavyweight performances." },
-  { id: "aw_maestro", title: "Maestro", mediaType: "movie", year: 2023, genre: "Biographical Drama", description: "Intimate biographical drama focused on artistic legacy." },
-  { id: "aw_barbie", title: "Barbie", mediaType: "movie", year: 2023, genre: "Satire", description: "Blockbuster satire recognized for cultural impact and design." },
-  { id: "aw_zone_of_interest", title: "The Zone of Interest", mediaType: "movie", year: 2023, genre: "Historical Drama", description: "Experimental historical drama praised for formal innovation." },
-  { id: "aw_american_fiction", title: "American Fiction", mediaType: "movie", year: 2023, genre: "Satire", description: "Sharp social satire driven by performance and commentary." },
+  { id: "aw_oppenheimer", title: "Oppenheimer", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/8Gxv8gSFCU0XGDykEGv7zR1n2ua.jpg", year: 2023, genre: "Drama", description: "Awards frontrunner for direction, performance, and technical scale." },
+  { id: "aw_poor_things", title: "Poor Things", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/kCGlIMHnOm8JPXq3rXM6c5wMxcT.jpg", year: 2023, genre: "Surreal Prestige", description: "Surreal prestige cinema driven by bold performances and design." },
+  { id: "aw_anatomy_of_a_fall", title: "Anatomy of a Fall", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/kQs6keheMwCxJxrzV83VUwFtHkB.jpg", year: 2023, genre: "Courtroom Drama", description: "Courtroom drama with critical acclaim and standout acting." },
+  { id: "aw_holdovers", title: "The Holdovers", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/VHSzNBTwxV8vh7wylo7O9CLdac.jpg", year: 2023, genre: "Period Drama", description: "Character-driven period drama fueled by performance and writing." },
+  { id: "aw_past_lives", title: "Past Lives", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/k3waqVXSnvCZWfJYNtdamTgTtTA.jpg", year: 2023, genre: "Drama", description: "Emotional indie drama anchored by subtle, powerful performances." },
+  { id: "aw_killers", title: "Killers of the Flower Moon", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/dB6Krk806zeqd0YNp2ngQ9zXteH.jpg", year: 2023, genre: "Historical Crime", description: "Epic historical crime drama with heavyweight performances." },
+  { id: "aw_maestro", title: "Maestro", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/njsL6XJovH7Y7cfWfMNkWvVfBEl.jpg", year: 2023, genre: "Biographical Drama", description: "Intimate biographical drama focused on artistic legacy." },
+  { id: "aw_barbie", title: "Barbie", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/iuFNMS8U5cb6xfzi51Dbkovj7vM.jpg", year: 2023, genre: "Satire", description: "Blockbuster satire recognized for cultural impact and design." },
+  { id: "aw_zone_of_interest", title: "The Zone of Interest", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/hUu9zyZmDd8VZegKi1iK1Vk0RYS.jpg", year: 2023, genre: "Historical Drama", description: "Experimental historical drama praised for formal innovation." },
+  { id: "aw_american_fiction", title: "American Fiction", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/57MFWGHarg9jid7yfDTka4RmcMU.jpg", year: 2023, genre: "Satire", description: "Sharp social satire driven by performance and commentary." },
 ];
 
 const DOUBLE_FEATURE_ITEMS: DoubleFeatureItem[] = [
-  { id: "df_black_swan", leftTitle: "Black Swan", leftType: "movie", rightTitle: "Perfect Blue", rightType: "movie", genre: "Psychological", description: "Psychological identity spirals through performance and pressure." },
-  { id: "df_past_lives", leftTitle: "Past Lives", leftType: "movie", rightTitle: "Before Sunrise", rightType: "movie", genre: "Romance", description: "Intimate romantic conversations shaped by timing and place." },
-  { id: "df_succession_industry", leftTitle: "Succession", leftType: "show", rightTitle: "Industry", rightType: "show", genre: "Prestige Drama", description: "Power, ambition, and moral compromise inside elite systems." },
-  { id: "df_social_network", leftTitle: "The Social Network", leftType: "movie", rightTitle: "Steve Jobs", rightType: "movie", genre: "Biographical", description: "Fast-talking portraits of visionary ambition and ego." },
-  { id: "df_hereditary_witch", leftTitle: "Hereditary", leftType: "movie", rightTitle: "The Witch", rightType: "movie", genre: "Horror", description: "Atmospheric horror driven by dread, isolation, and slow tension." },
-  { id: "df_ladybird_frances", leftTitle: "Lady Bird", leftType: "movie", rightTitle: "Frances Ha", rightType: "movie", genre: "Coming of Age", description: "Restless coming-of-age stories about identity and direction." },
-  { id: "df_dune_blade_runner", leftTitle: "Dune", leftType: "movie", rightTitle: "Blade Runner 2049", rightType: "movie", genre: "Sci-Fi", description: "Epic sci-fi worlds defined by scale, design, and philosophy." },
-  { id: "df_moonlight_call_me", leftTitle: "Moonlight", leftType: "movie", rightTitle: "Call Me by Your Name", rightType: "movie", genre: "Drama", description: "Tender, visually rich stories of identity and longing." },
-  { id: "df_zodiac_mindhunter", leftTitle: "Zodiac", leftType: "movie", rightTitle: "Mindhunter", rightType: "show", genre: "Crime", description: "Obsessive procedural investigations into criminal psychology." },
-  { id: "df_lost_in_translation", leftTitle: "Lost in Translation", leftType: "movie", rightTitle: "In the Mood for Love", rightType: "movie", genre: "Romance", description: "Quiet longing expressed through atmosphere and restraint." },
+  { id: "df_black_swan", leftTitle: "Black Swan", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/viWheBd44bouiLCHgNMvahLThqx.jpg", rightTitle: "Perfect Blue", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/2fYpM2R5mQb9a9nM3sQvVf8k0Yk.jpg", genre: "Psychological", description: "Psychological identity spirals through performance and pressure." },
+  { id: "df_past_lives", leftTitle: "Past Lives", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/k3waqVXSnvCZWfJYNtdamTgTtTA.jpg", rightTitle: "Before Sunrise", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/4K5hC2G6z6L1bY3N7r1P8v2v8mG.jpg", genre: "Romance", description: "Intimate romantic conversations shaped by timing and place." },
+  { id: "df_succession_industry", leftTitle: "Succession", leftType: "show", leftPoster: "https://image.tmdb.org/t/p/w500/7HW47XbkNQ5fiwQFYGWdw9gs144.jpg", rightTitle: "Industry", rightType: "show", rightPoster: "https://image.tmdb.org/t/p/w500/x8xq4R8vH0qL9r2Q2cYVQY5nY6V.jpg", genre: "Prestige Drama", description: "Power, ambition, and moral compromise inside elite systems." },
+  { id: "df_social_network", leftTitle: "The Social Network", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/n0ybibhJtQ5icDqTp8eRytcIHJx.jpg", rightTitle: "Steve Jobs", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/ah19M0nQJ6fdrH3oQjAriRbBCvN.jpg", genre: "Biographical", description: "Fast-talking portraits of visionary ambition and ego." },
+  { id: "df_hereditary_witch", leftTitle: "Hereditary", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/p9fmuz2Oj3HtEJEqbIwkFGUhVXD.jpg", rightTitle: "The Witch", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/zlEhsNfOKhbnfs5NTJ6zOZtoLBb.jpg", genre: "Horror", description: "Atmospheric horror driven by dread, isolation, and slow tension." },
+  { id: "df_ladybird_frances", leftTitle: "Lady Bird", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/iySFtKLrWvVzXzlFj7x1zalxi5G.jpg", rightTitle: "Frances Ha", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/gf1Q1f3nJ2jQfF4nM16fY7lyfX2.jpg", genre: "Coming of Age", description: "Restless coming-of-age stories about identity and direction." },
+  { id: "df_dune_blade_runner", leftTitle: "Dune: Part Two", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/1pdfLvkbY9ohJlCjQH2CZjjYVvJ.jpg", rightTitle: "Blade Runner 2049", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/gajva2L0rPYkEWjzgFlBXCAVBE5.jpg", genre: "Sci-Fi", description: "Epic sci-fi worlds defined by scale, design, and philosophy." },
+  { id: "df_moonlight_call_me", leftTitle: "Moonlight", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/4911T5FbJ9eD2Faz5Z8cT3SU9a.jpg", rightTitle: "Call Me by Your Name", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/mZ4gBdfVHf0MER7qbEqRhoB2q6p.jpg", genre: "Drama", description: "Tender, visually rich stories of identity and longing." },
+  { id: "df_zodiac_mindhunter", leftTitle: "Zodiac", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/6YmeO4pB7XTh8P8F960O1uA14JO.jpg", rightTitle: "Mindhunter", rightType: "show", rightPoster: "https://image.tmdb.org/t/p/w500/fbKE87mojpIETWepSbD5Qt741fp.jpg", genre: "Crime", description: "Obsessive procedural investigations into criminal psychology." },
+  { id: "df_lost_in_translation", leftTitle: "Lost in Translation", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/wkSzJs7oMf8MIr9CQVICsvRfwA7.jpg", rightTitle: "In the Mood for Love", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/iYypPT4bhqXfq1b6EnmxvRt6b2Y.jpg", genre: "Romance", description: "Quiet longing expressed through atmosphere and restraint." },
 ];
 
+const POSTER_PLACEHOLDER = "/media/brand/poster_placeholder.png";
+const DIRECT_IMAGE_EXT = /\.(jpg|jpeg|png|webp)(\?.*)?$/i;
+const WIKI_POSTER_FALLBACK: Record<string, string> = {
+  "perfect blue::movie": "https://en.wikipedia.org/wiki/Special:FilePath/Perfect_Blue_film_poster.jpg",
+  "before sunrise::movie": "https://en.wikipedia.org/wiki/Special:FilePath/Before_Sunrise_poster.jpg",
+  "steve jobs::movie": "https://en.wikipedia.org/wiki/Special:FilePath/Steve_Jobs_%28film%29_poster.jpg",
+  "industry::show": "https://en.wikipedia.org/wiki/Special:FilePath/Industry_%28TV_series%29_title_card.jpg",
+  "maestro::movie": "https://en.wikipedia.org/wiki/Special:FilePath/Maestro_film_poster.jpg",
+  "moonlight::movie": "https://en.wikipedia.org/wiki/Special:FilePath/Moonlight_%282016_film%29.png",
+  "call me by your name::movie": "https://en.wikipedia.org/wiki/Special:FilePath/Call_Me_by_Your_Name_film_poster.png",
+  "frances ha::movie": "https://en.wikipedia.org/wiki/Special:FilePath/Frances_Ha_poster.jpg",
+};
+
+function normalizeExternalPoster(uri?: string | null): string | null {
+  if (!uri) {
+    return null;
+  }
+  const value = uri.trim();
+  if (!value.startsWith("https://")) {
+    return null;
+  }
+  if (value.startsWith("https://image.tmdb.org/t/p/")) {
+    return value.replace(/\/(original|w[0-9]+)\//i, "/w500/");
+  }
+  if (DIRECT_IMAGE_EXT.test(value)) {
+    return value;
+  }
+  return null;
+}
+
+function getPosterUri(title: string, mediaType: "movie" | "show", primary?: string | null, secondary?: string | null): string {
+  const titleFallback = WIKI_POSTER_FALLBACK[titleKey(title, mediaType)];
+  const external = normalizeExternalPoster(primary) ?? normalizeExternalPoster(secondary);
+  if (external) {
+    return external;
+  }
+  if (titleFallback) {
+    return titleFallback;
+  }
+  return resolveMediaUrl(POSTER_PLACEHOLDER) ?? POSTER_PLACEHOLDER;
+}
+
+function PosterCardImage({
+  title,
+  mediaType,
+  uri,
+  fallbackUri,
+  style,
+}: {
+  title: string;
+  mediaType: "movie" | "show";
+  uri?: string | null;
+  fallbackUri?: string | null;
+  style: any;
+}) {
+  const [failed, setFailed] = useState(false);
+  const primary = getPosterUri(title, mediaType, uri, fallbackUri);
+  const placeholder = resolveMediaUrl(POSTER_PLACEHOLDER) ?? POSTER_PLACEHOLDER;
+  const sourceUri = failed ? placeholder : primary;
+  return (
+    <Image
+      source={{ uri: sourceUri }}
+      style={style}
+      resizeMode="cover"
+      onError={() => setFailed(true)}
+      defaultSource={{ uri: placeholder }}
+    />
+  );
+}
+
 export default function HomeScreen() {
+  const router = useRouter();
   const { sessionToken, user } = useAuth();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Title[]>([]);
@@ -411,6 +490,7 @@ export default function HomeScreen() {
   const [toast, setToast] = useState<string | null>(null);
 
   const [selectedTitle, setSelectedTitle] = useState<Title | null>(null);
+  const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
   const [showPostComposer, setShowPostComposer] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
@@ -457,10 +537,6 @@ export default function HomeScreen() {
     return values;
   }
 
-  function titleKey(name: string, type: "movie" | "show") {
-    return `${name.toLowerCase()}::${type}`;
-  }
-
   async function resolveTitleByName(name: string, preferredType: "movie" | "show") {
     const key = titleKey(name, preferredType);
     const cached = resolvedTitleMap[key];
@@ -485,8 +561,16 @@ export default function HomeScreen() {
       if (!picked) {
         return null;
       }
-      setResolvedTitleMap((current) => ({ ...current, [key]: picked }));
-      return picked;
+      // Always hydrate with title detail endpoint so poster_url uses TMDB refresh + Wikipedia fallback.
+      // Search rows can be stale/incomplete and are a common source of missing thumbnail images.
+      let hydrated = picked;
+      try {
+        hydrated = await apiRequest<Title>(`/titles/${picked.id}`, { token: sessionToken });
+      } catch {
+        hydrated = picked;
+      }
+      setResolvedTitleMap((current) => ({ ...current, [key]: hydrated }));
+      return hydrated;
     } catch {
       return null;
     }
@@ -638,8 +722,39 @@ export default function HomeScreen() {
     return () => clearTimeout(timer);
   }, [query, sessionToken]);
 
+  useEffect(() => {
+    if (!sessionToken) {
+      return;
+    }
+    const editorialTargets = [
+      ...AWARDS_SEASON_ITEMS.map((item) => ({ title: item.title, mediaType: item.mediaType })),
+      ...DOUBLE_FEATURE_ITEMS.flatMap((item) => [
+        { title: item.leftTitle, mediaType: item.leftType },
+        { title: item.rightTitle, mediaType: item.rightType },
+      ]),
+    ];
+    const byKey = new Map<string, { title: string; mediaType: "movie" | "show" }>();
+    for (const item of editorialTargets) {
+      byKey.set(titleKey(item.title, item.mediaType), item);
+    }
+
+    async function preloadEditorialPosters() {
+      await Promise.all(
+        Array.from(byKey.values()).map(async (item) => {
+          try {
+            await resolveTitleByName(item.title, item.mediaType);
+          } catch {
+            // keep static poster fallback
+          }
+        })
+      );
+    }
+    void preloadEditorialPosters();
+  }, [sessionToken]);
+
   function openSaveSheet(title: Title) {
     setSelectedTitle(title);
+    setSaveTitleId(title.id);
     setShowSaveSheet(true);
   }
 
@@ -661,14 +776,20 @@ export default function HomeScreen() {
     }
   }
 
-  function openComposer(title: Title) {
-    setSelectedTitle(title);
+  function openComposer(title: Pick<Title, "id" | "title" | "poster_url" | "tmdb_rating">) {
+    setSelectedTitle((current) => ({
+      tmdb_id: current?.tmdb_id ?? 0,
+      content_type: current?.content_type ?? "movie",
+      genres: current?.genres ?? [],
+      ...current,
+      ...title,
+    }));
     setComposeCaption("");
     setComposeRating(title.tmdb_rating ? `${Math.round(title.tmdb_rating)}` : "");
     setShowPostComposer(true);
   }
 
-  function openAddToTeam(title: Title) {
+  function openAddToTeam(title: Pick<Title, "id" | "title">) {
     setAddToTeamTitle({ id: title.id, title: title.title });
     setShowAddToTeam(true);
   }
@@ -780,7 +901,7 @@ export default function HomeScreen() {
               },
             ]}
           />
-          <Image source={require("../../assets/branding/seensnap-logo.png")} style={styles.logo} resizeMode="contain" />
+          <Image source={require("../../assets/branding/seensnap-logo-white.png")} style={styles.logo} resizeMode="contain" />
           <Pressable style={styles.bellButton}>
             <Ionicons name="notifications-outline" size={19} color={colors.ink} />
           </Pressable>
@@ -788,6 +909,17 @@ export default function HomeScreen() {
           <Text style={styles.heroSubtitle}>Find the scene. Save the feeling.</Text>
           <Text style={styles.heroMicro}>Track what you love. Discover what's next.</Text>
         </View>
+
+        <Pressable style={styles.swipeCtaCard} onPress={() => router.push("/what-next")}>
+          <View style={styles.swipeCtaGlow} />
+          <Text style={styles.swipeCtaKicker}>Swipe Discovery</Text>
+          <Text style={styles.swipeCtaTitle}>Not sure what to watch?</Text>
+          <Text style={styles.swipeCtaBody}>Let SeenSnap build a cinematic swipe deck around your taste, your teams, and what you are most likely to love tonight.</Text>
+          <View style={styles.swipeCtaButton}>
+            <Ionicons name="sparkles" size={16} color={colors.background} />
+            <Text style={styles.swipeCtaButtonText}>Open What&apos;s Next?</Text>
+          </View>
+        </Pressable>
 
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Trending</Text>
@@ -1127,14 +1259,13 @@ export default function HomeScreen() {
             {AWARDS_SEASON_ITEMS.map((item) => (
               <View key={item.id} style={styles.editorialCard}>
                 <Pressable onPress={() => void openDetailsByName(item.title, item.mediaType)}>
-                  {resolvedTitleMap[titleKey(item.title, item.mediaType)]?.poster_url ? (
-                    <Image
-                      source={{ uri: resolvedTitleMap[titleKey(item.title, item.mediaType)]?.poster_url ?? "" }}
-                      style={styles.editorialPoster}
-                    />
-                  ) : (
-                    <View style={styles.editorialPosterFallback} />
-                  )}
+                  <PosterCardImage
+                    title={item.title}
+                    mediaType={item.mediaType}
+                    uri={resolvedTitleMap[titleKey(item.title, item.mediaType)]?.poster_url ?? null}
+                    fallbackUri={item.poster}
+                    style={styles.editorialPoster}
+                  />
                 </Pressable>
                 <Text style={styles.editorialTitle}>{item.title}</Text>
                 <Text style={styles.editorialMeta}>
@@ -1172,6 +1303,34 @@ export default function HomeScreen() {
               <View key={item.id} style={styles.editorialCardWide}>
                 <Text style={styles.doubleFeatureTitle}>{item.leftTitle} + {item.rightTitle}</Text>
                 <Text style={styles.editorialMeta}>{item.genre}</Text>
+                <View style={styles.doublePosterRow}>
+                  <Pressable
+                    style={styles.doublePosterColumn}
+                    onPress={() => void openDetailsByName(item.leftTitle, item.leftType)}
+                  >
+                    <PosterCardImage
+                      title={item.leftTitle}
+                      mediaType={item.leftType}
+                      uri={resolvedTitleMap[titleKey(item.leftTitle, item.leftType)]?.poster_url ?? null}
+                      fallbackUri={item.leftPoster}
+                      style={styles.doublePoster}
+                    />
+                    <Text numberOfLines={1} style={styles.doublePosterTitle}>{item.leftTitle}</Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.doublePosterColumn}
+                    onPress={() => void openDetailsByName(item.rightTitle, item.rightType)}
+                  >
+                    <PosterCardImage
+                      title={item.rightTitle}
+                      mediaType={item.rightType}
+                      uri={resolvedTitleMap[titleKey(item.rightTitle, item.rightType)]?.poster_url ?? null}
+                      fallbackUri={item.rightPoster}
+                      style={styles.doublePoster}
+                    />
+                    <Text numberOfLines={1} style={styles.doublePosterTitle}>{item.rightTitle}</Text>
+                  </Pressable>
+                </View>
                 <Text numberOfLines={3} style={styles.editorialDescription}>{item.description}</Text>
                 <View style={styles.actionRow}>
                   <Pressable
@@ -1193,7 +1352,14 @@ export default function HomeScreen() {
                     style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}
                   >
                     <Ionicons name="information-circle-outline" size={14} color={colors.ink} />
-                    <Text style={styles.actionLabel}>Open</Text>
+                    <Text style={styles.actionLabel}>Open Left</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => void openDetailsByName(item.rightTitle, item.rightType)}
+                    style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}
+                  >
+                    <Ionicons name="information-circle-outline" size={14} color={colors.ink} />
+                    <Text style={styles.actionLabel}>Open Right</Text>
                   </Pressable>
                 </View>
               </View>
@@ -1205,12 +1371,15 @@ export default function HomeScreen() {
       <SaveToListSheet
         visible={showSaveSheet}
         token={sessionToken}
-        titleId={selectedTitle?.id ?? null}
+        titleId={saveTitleId}
         source="home"
-        onClose={() => setShowSaveSheet(false)}
+        onClose={() => {
+          setShowSaveSheet(false);
+          setSaveTitleId(null);
+        }}
         onSaved={(listName, alreadySaved) => {
-          if (selectedTitle) {
-            setSavedIds((current) => new Set(current).add(selectedTitle.id));
+          if (saveTitleId) {
+            setSavedIds((current) => new Set(current).add(saveTitleId));
           }
           void refreshRecommendations();
           setToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`);
@@ -1273,20 +1442,23 @@ export default function HomeScreen() {
         loading={detailLoading}
         title={universalTitle}
         onClose={() => setShowDetails(false)}
-        onSave={() => {
-          if (selectedTitle) {
-            openSaveSheet(selectedTitle);
-          }
+        onSaveTitle={(detail) => {
+          setSaveTitleId(detail.id);
+          setShowSaveSheet(true);
         }}
-        onPost={() => {
-          if (selectedTitle) {
-            openComposer(selectedTitle);
-          }
+        onPost={(detail) => {
+          openComposer({
+            id: detail.id,
+            title: detail.title,
+            poster_url: detail.posterUrl ?? undefined,
+            tmdb_rating: detail.ratingTmdb ?? undefined,
+          });
         }}
-        onAddToTeam={() => {
-          if (selectedTitle) {
-            openAddToTeam(selectedTitle);
-          }
+        onAddToTeam={(detail) => {
+          openAddToTeam({
+            id: detail.id,
+            title: detail.title,
+          });
         }}
       />
 
@@ -1329,7 +1501,7 @@ const styles = StyleSheet.create({
   hero: {
     borderRadius: 22,
     paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.xl,
+    paddingVertical: spacing.xl + 10,
     alignItems: "center",
     backgroundColor: "rgba(11, 20, 36, 0.58)",
     borderWidth: 1,
@@ -1337,9 +1509,9 @@ const styles = StyleSheet.create({
   },
   logoGlow: {
     position: "absolute",
-    top: 24,
-    width: 320,
-    height: 120,
+    top: 18,
+    width: 420,
+    height: 170,
     borderRadius: 120,
     backgroundColor: "rgba(244, 196, 48, 0.14)",
   },
@@ -1352,7 +1524,7 @@ const styles = StyleSheet.create({
     borderRadius: 100,
     backgroundColor: "rgba(32, 53, 82, 0.45)",
   },
-  logo: { width: 272, height: 92 },
+  logo: { width: 376, height: 132, marginTop: 8, marginBottom: 16 },
   bellButton: {
     position: "absolute",
     right: 14,
@@ -1369,6 +1541,60 @@ const styles = StyleSheet.create({
   heroTitle: { marginTop: 16, color: colors.ink, fontSize: 30, fontWeight: "900", textAlign: "center" },
   heroSubtitle: { marginTop: 6, color: colors.muted, lineHeight: 21, textAlign: "center" },
   heroMicro: { marginTop: 4, color: colors.ink, opacity: 0.72, textAlign: "center", fontSize: 13 },
+  swipeCtaCard: {
+    marginTop: spacing.md,
+    borderRadius: 28,
+    padding: spacing.xl,
+    backgroundColor: "#182843",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    overflow: "hidden",
+    gap: spacing.sm,
+  },
+  swipeCtaGlow: {
+    position: "absolute",
+    top: -50,
+    right: -20,
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: "rgba(244,196,48,0.16)",
+  },
+  swipeCtaKicker: {
+    color: colors.accent,
+    textTransform: "uppercase",
+    letterSpacing: 1.2,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  swipeCtaTitle: {
+    color: colors.ink,
+    fontSize: 24,
+    lineHeight: 29,
+    fontWeight: "900",
+  },
+  swipeCtaBody: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 21,
+    maxWidth: "92%",
+  },
+  swipeCtaButton: {
+    marginTop: spacing.xs,
+    alignSelf: "flex-start",
+    borderRadius: radii.pill,
+    backgroundColor: colors.accent,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  swipeCtaButtonText: {
+    color: colors.background,
+    fontSize: 13,
+    fontWeight: "900",
+  },
   trendingRow: { gap: 12, paddingBottom: 4 },
   trendingCard: {
     width: 248,
@@ -1685,13 +1911,13 @@ const styles = StyleSheet.create({
   },
   editorialPoster: {
     width: "100%",
-    height: 150,
+    aspectRatio: 2 / 3,
     borderRadius: 10,
     backgroundColor: colors.backgroundElevated,
   },
   editorialPosterFallback: {
     width: "100%",
-    height: 150,
+    aspectRatio: 2 / 3,
     borderRadius: 10,
     backgroundColor: colors.backgroundElevated,
   },
@@ -1726,6 +1952,32 @@ const styles = StyleSheet.create({
     color: colors.accent,
     fontWeight: "900",
     fontSize: 17,
+  },
+  doublePosterRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    gap: 10,
+  },
+  doublePosterColumn: {
+    flex: 1,
+    gap: 6,
+  },
+  doublePoster: {
+    width: "100%",
+    aspectRatio: 2 / 3,
+    borderRadius: 10,
+    backgroundColor: colors.backgroundElevated,
+  },
+  doublePosterFallback: {
+    width: "100%",
+    aspectRatio: 2 / 3,
+    borderRadius: 10,
+    backgroundColor: colors.backgroundElevated,
+  },
+  doublePosterTitle: {
+    color: colors.ink,
+    fontSize: 12,
+    fontWeight: "700",
   },
   pulseCard: {
     borderRadius: 14,

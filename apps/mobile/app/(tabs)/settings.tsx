@@ -20,7 +20,9 @@ import { useFocusEffect } from "@react-navigation/native";
 import { Screen } from "@/components/screen";
 import { colors, radii, spacing } from "@/constants/theme";
 import { apiRequest } from "@/lib/api";
+import { trackEvent } from "@/lib/analytics";
 import { useAuth } from "@/lib/auth";
+import { STREAMING_SERVICES } from "@/lib/streaming";
 
 type Profile = {
   user_id: string;
@@ -42,12 +44,18 @@ type PublicPost = {
   created_at: string;
 };
 
+type Preferences = {
+  connected_streaming_services: string[];
+};
+
 export default function ProfileScreen() {
   const { sessionToken, user, updateSessionUser } = useAuth();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [posts, setPosts] = useState<PublicPost[]>([]);
+  const [preferences, setPreferences] = useState<Preferences>({ connected_streaming_services: [] });
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSavingPreferences, setIsSavingPreferences] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [showEdit, setShowEdit] = useState(false);
@@ -56,6 +64,7 @@ export default function ProfileScreen() {
   const [draftUsername, setDraftUsername] = useState("");
   const [draftBio, setDraftBio] = useState("");
   const [draftAvatarUri, setDraftAvatarUri] = useState<string | null>(null);
+  const [draftStreamingServices, setDraftStreamingServices] = useState<string[]>([]);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
 
   const bioCount = draftBio.length;
@@ -72,6 +81,8 @@ export default function ProfileScreen() {
         try {
           const me = await apiRequest<Profile>("/me", { token: sessionToken });
           setProfile(me);
+          const prefs = await apiRequest<Preferences>("/me/preferences", { token: sessionToken });
+          setPreferences(prefs);
           const history = await apiRequest<PublicPost[]>(`/profiles/${me.user_id}/posts`, { token: sessionToken });
           setPosts(history);
         } catch (loadError) {
@@ -94,6 +105,7 @@ export default function ProfileScreen() {
     setDraftUsername(profile.username);
     setDraftBio(profile.bio ?? "");
     setDraftAvatarUri(profile.avatar_url ?? null);
+    setDraftStreamingServices(preferences.connected_streaming_services);
     setShowEdit(true);
   }
 
@@ -126,6 +138,44 @@ export default function ProfileScreen() {
     } finally {
       setIsSaving(false);
     }
+  }
+
+  async function saveStreamingPreferences(nextServices: string[]) {
+    if (!sessionToken) {
+      return;
+    }
+    setIsSavingPreferences(true);
+    setError(null);
+    try {
+      const updated = await apiRequest<Preferences>("/me/preferences", {
+        method: "PATCH",
+        token: sessionToken,
+        body: JSON.stringify({ connected_streaming_services: nextServices }),
+      });
+      setPreferences(updated);
+      setDraftStreamingServices(updated.connected_streaming_services);
+      trackEvent("streaming_service_selected", {
+        services: updated.connected_streaming_services,
+        userId: user?.user_id ?? null,
+      });
+    } catch (preferencesError) {
+      setError(
+        preferencesError instanceof Error
+          ? preferencesError.message
+          : "Failed to save streaming services"
+      );
+    } finally {
+      setIsSavingPreferences(false);
+    }
+  }
+
+  async function toggleStreamingService(serviceId: string) {
+    const currentlyEnabled = draftStreamingServices.includes(serviceId);
+    const next = currentlyEnabled
+      ? draftStreamingServices.filter((entry) => entry !== serviceId)
+      : [...draftStreamingServices, serviceId];
+    setDraftStreamingServices(next);
+    await saveStreamingPreferences(next);
   }
 
   async function pickAvatarImage() {
@@ -228,6 +278,30 @@ export default function ProfileScreen() {
               <Text style={styles.bioMeta}>Welcome back, {firstName}.</Text>
             </View>
 
+            <View style={styles.bioCard}>
+              <Text style={styles.sectionLabel}>Streaming Services</Text>
+              <Text style={styles.bioText}>
+                Select the platforms you subscribe to so SeenSnap can show where you can watch instantly.
+              </Text>
+              <View style={styles.streamingSummaryRow}>
+                {preferences.connected_streaming_services.length ? (
+                  preferences.connected_streaming_services.map((serviceId) => {
+                    const service = STREAMING_SERVICES.find((entry) => entry.id === serviceId);
+                    if (!service) {
+                      return null;
+                    }
+                    return (
+                      <View key={service.id} style={[styles.streamingSummaryChip, { borderColor: service.color }]}>
+                        <Text style={styles.streamingSummaryText}>{service.name}</Text>
+                      </View>
+                    );
+                  })
+                ) : (
+                  <Text style={styles.bioMeta}>No subscriptions selected yet.</Text>
+                )}
+              </View>
+            </View>
+
             <View style={styles.postsHeader}>
               <Text style={styles.sectionLabel}>Public Posts</Text>
               <Text style={styles.postsCount}>{posts.length}</Text>
@@ -310,6 +384,37 @@ export default function ProfileScreen() {
                 maxLength={280}
               />
               <Text style={styles.counter}>{bioCount}/280</Text>
+              <Text style={styles.inputLabel}>Streaming Services</Text>
+              <Text style={styles.helperText}>
+                Select the platforms you subscribe to so SeenSnap can show where you can watch instantly.
+              </Text>
+              <View style={styles.streamingGrid}>
+                {STREAMING_SERVICES.map((service) => {
+                  const selected = draftStreamingServices.includes(service.id);
+                  return (
+                    <Pressable
+                      key={service.id}
+                      style={[styles.streamingCard, selected && styles.streamingCardSelected]}
+                      onPress={() => void toggleStreamingService(service.id)}
+                      disabled={isSavingPreferences}
+                    >
+                      <View style={[styles.streamingLogo, { backgroundColor: service.color }]}>
+                        <Text style={styles.streamingLogoText}>{service.shortName}</Text>
+                      </View>
+                      <View style={styles.streamingCardCopy}>
+                        <Text style={styles.streamingCardTitle}>{service.name}</Text>
+                        <Text style={styles.streamingCardMeta}>{selected ? "Selected" : "Tap to add"}</Text>
+                      </View>
+                      <Ionicons
+                        name={selected ? "toggle" : "toggle-outline"}
+                        size={30}
+                        color={selected ? colors.success : colors.muted}
+                      />
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {isSavingPreferences ? <Text style={styles.counter}>Saving streaming services...</Text> : null}
             </ScrollView>
             <View style={styles.modalActions}>
               <Pressable style={styles.modalCancel} onPress={() => setShowEdit(false)}>
@@ -443,6 +548,23 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 12,
   },
+  streamingSummaryRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+  },
+  streamingSummaryChip: {
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 8,
+    backgroundColor: colors.surface,
+  },
+  streamingSummaryText: {
+    color: colors.ink,
+    fontSize: 12,
+    fontWeight: "700",
+  },
   postsHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -534,6 +656,55 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     fontSize: 20,
     paddingHorizontal: spacing.lg,
+  },
+  helperText: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 4,
+  },
+  streamingGrid: {
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  streamingCard: {
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
+    padding: spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  streamingCardSelected: {
+    borderColor: colors.success,
+    backgroundColor: colors.surface,
+  },
+  streamingLogo: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  streamingLogoText: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  streamingCardCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  streamingCardTitle: {
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  streamingCardMeta: {
+    color: colors.muted,
+    fontSize: 12,
   },
   modalBody: {
     paddingHorizontal: spacing.lg,

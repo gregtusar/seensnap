@@ -13,6 +13,7 @@ import {
 import { useFocusEffect } from "@react-navigation/native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
+import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, radii, spacing } from "@/constants/theme";
 import { apiRequest, resolveMediaUrl } from "@/lib/api";
@@ -56,6 +57,8 @@ export default function PublicProfileScreen() {
   const [showDetails, setShowDetails] = useState(false);
   const [detailTitle, setDetailTitle] = useState<UniversalTitle | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [showSaveSheet, setShowSaveSheet] = useState(false);
+  const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -204,8 +207,22 @@ export default function PublicProfileScreen() {
         loading={detailLoading}
         title={detailTitle}
         onClose={() => setShowDetails(false)}
-        onSave={() => {}}
+        onSaveTitle={(detail) => {
+          setSaveTitleId(detail.id);
+          setShowSaveSheet(true);
+        }}
         onPost={() => {}}
+      />
+      <SaveToListSheet
+        visible={showSaveSheet}
+        token={sessionToken}
+        titleId={saveTitleId}
+        source="profile"
+        onClose={() => {
+          setShowSaveSheet(false);
+          setSaveTitleId(null);
+        }}
+        onError={(message) => setError(message)}
       />
     </SafeAreaView>
   );

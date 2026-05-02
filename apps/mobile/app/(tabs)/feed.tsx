@@ -24,7 +24,7 @@ import { colors, radii, spacing } from "@/constants/theme";
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
-import { apiRequest, resolveMediaUrl } from "@/lib/api";
+import { apiRequest, resolveMediaUrl, resolvedApiBaseUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 
@@ -114,6 +114,7 @@ export default function FeedScreen() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
+  const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [savedTitleIds, setSavedTitleIds] = useState<Set<string>>(new Set());
 
   const [attachedTitle, setAttachedTitle] = useState<Title | null>(null);
@@ -553,7 +554,7 @@ export default function FeedScreen() {
             </View>
           </View>
 
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+          {error ? <Text style={styles.error}>{error} ({resolvedApiBaseUrl})</Text> : null}
           {isLoading ? <Text style={styles.meta}>Loading feed...</Text> : null}
 
           {!isLoading && items.length === 0 ? (
@@ -611,13 +612,30 @@ export default function FeedScreen() {
         visible={showDetails}
         loading={detailLoading}
         title={detailTitle}
-        isSaved={Boolean(detailSource?.title?.id && savedTitleIds.has(detailSource.title.id))}
+        isSaved={Boolean(detailTitle?.id && savedTitleIds.has(detailTitle.id))}
         onClose={() => setShowDetails(false)}
-        onSave={() => setShowSaveSheet(true)}
-        onPost={() => openComposer(detailSource, "card")}
-        onAddToTeam={() =>
+        onSaveTitle={(detail) => {
+          setSaveTitleId(detail.id);
+          setShowSaveSheet(true);
+        }}
+        onPost={(detail) =>
+          openComposer(
+            {
+              ...detailSource,
+              title: {
+                id: detail.id,
+                title: detail.title,
+                content_type: detail.mediaType === "movie" ? "movie" : "series",
+                poster_url: detail.posterUrl ?? undefined,
+                backdrop_url: detail.backdropUrl ?? undefined,
+              },
+            } as FeedEvent,
+            "card"
+          )
+        }
+        onAddToTeam={(detail) =>
           openAddToTeam(
-            detailSource?.title ? { id: detailSource.title.id, title: detailSource.title.title } : null
+            { id: detail.id, title: detail.title }
           )
         }
       />
@@ -725,12 +743,15 @@ export default function FeedScreen() {
       <SaveToListSheet
         visible={showSaveSheet}
         token={sessionToken}
-        titleId={detailSource?.title?.id ?? null}
+        titleId={saveTitleId}
         source="social_feed"
-        onClose={() => setShowSaveSheet(false)}
+        onClose={() => {
+          setShowSaveSheet(false);
+          setSaveTitleId(null);
+        }}
         onSaved={(listName, alreadySaved) => {
-          if (detailSource?.title?.id) {
-            setSavedTitleIds((current) => new Set(current).add(detailSource.title!.id));
+          if (saveTitleId) {
+            setSavedTitleIds((current) => new Set(current).add(saveTitleId));
           }
           setToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`);
         }}
@@ -1076,11 +1097,19 @@ function PosterThumb({
   iconSize: number;
 }) {
   const [sourceIndex, setSourceIndex] = useState(0);
-  const sources = [
-    resolveMediaUrl(uri),
-    resolveMediaUrl(secondaryUri),
-    resolveMediaUrl("/media/brand/title_placeholder.jpg"),
-  ].filter((entry, idx, arr): entry is string => Boolean(entry) && arr.indexOf(entry) === idx);
+  const sources = useMemo(
+    () =>
+      [
+        resolveMediaUrl(uri),
+        resolveMediaUrl(secondaryUri),
+        resolveMediaUrl("/media/brand/seensnap_logo.png"),
+      ].filter((entry, idx, arr): entry is string => Boolean(entry) && arr.indexOf(entry) === idx),
+    [uri, secondaryUri],
+  );
+  const sourceKey = sources.join("|");
+  useEffect(() => {
+    setSourceIndex(0);
+  }, [sourceKey]);
   const activeSource = sources[sourceIndex] ?? null;
   if (!activeSource) {
     return (

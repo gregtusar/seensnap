@@ -27,7 +27,9 @@ from app.schemas.team import (
     TeamUpdateRequest,
     TeamUserSearchResponse,
 )
+from app.schemas.taste import TeamAnalyticsResponse
 from app.services.activity import get_team_activity_by_id, list_activity_actor_profiles, list_team_activity
+from app.services.compatibility import get_team_analytics, to_team_analytics_response
 from app.services.teams import (
     add_title_to_team,
     add_team_member,
@@ -95,6 +97,12 @@ def get_team_detail(team_id: UUID, current_user: CurrentUser, db: DbSession) -> 
     if team is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
     return _load_team_response(db, team)
+
+
+@router.get("/{team_id}/analytics", response_model=TeamAnalyticsResponse)
+def get_team_analytics_route(team_id: UUID, current_user: CurrentUser, db: DbSession) -> TeamAnalyticsResponse:
+    require_team_member(db, team_id, current_user.id)
+    return to_team_analytics_response(get_team_analytics(db, team_id, force_refresh=True))
 
 
 @router.get("/{team_id}/titles", response_model=list[TeamTitleResponse])
@@ -330,6 +338,7 @@ def _to_team_response(
     members: list[TeamMember],
     profiles: dict[UUID, UserProfile],
 ) -> TeamResponse:
+    analytics = to_team_analytics_response(get_team_analytics(db, team.id))
     return TeamResponse(
         **_to_team_summary(db, team, len([member for member in members if member.status == "active"])).model_dump(),
         members=[
@@ -343,6 +352,7 @@ def _to_team_response(
             )
             for member in members
         ],
+        analytics=analytics,
     )
 
 

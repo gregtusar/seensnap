@@ -21,7 +21,7 @@ import { Screen } from "@/components/screen";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, radii, spacing } from "@/constants/theme";
-import { apiRequest, resolveMediaUrl } from "@/lib/api";
+import { apiRequest, resolveMediaUrl, resolvedApiBaseUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 
@@ -175,6 +175,7 @@ export default function TeamsScreen() {
   const [detailTitle, setDetailTitle] = useState<UniversalTitle | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
+  const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
   const [isBusy, setIsBusy] = useState(false);
@@ -880,7 +881,7 @@ export default function TeamsScreen() {
           </View>
         ) : null}
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+          {error ? <Text style={styles.error}>{error} ({resolvedApiBaseUrl})</Text> : null}
       </ScrollView>
 
       <KeyboardSheet visible={showCreate} onClose={() => setShowCreate(false)}>
@@ -1045,16 +1046,22 @@ export default function TeamsScreen() {
         loading={detailLoading}
         title={detailTitle}
         onClose={() => setShowDetails(false)}
-        onSave={() => setShowSaveSheet(true)}
+        onSaveTitle={(detail) => {
+          setSaveTitleId(detail.id);
+          setShowSaveSheet(true);
+        }}
         onPost={() => setToast("Post from title coming next")}
       />
 
       <SaveToListSheet
         visible={showSaveSheet}
         token={sessionToken}
-        titleId={detailTitle?.id ?? null}
+        titleId={saveTitleId}
         source="watch_team"
-        onClose={() => setShowSaveSheet(false)}
+        onClose={() => {
+          setShowSaveSheet(false);
+          setSaveTitleId(null);
+        }}
         onSaved={(listName, alreadySaved) => setToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`)}
         onError={(message) => setError(message)}
       />

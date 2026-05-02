@@ -1,12 +1,40 @@
+import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { useEffect, useState } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { Screen } from "@/components/screen";
 import { colors, radii, spacing } from "@/constants/theme";
+import { resolvedApiBaseUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 export default function SignInScreen() {
-  const { isExpoGo, isLoading, signInDemo, signInWithGoogle } = useAuth();
+  const { isExpoGo, isLoading, sessionToken, signInDemo, signInWithGoogle } = useAuth();
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (sessionToken) {
+      router.replace("/(tabs)");
+    }
+  }, [sessionToken]);
+
+  async function handleDemoSignIn() {
+    setError(null);
+    try {
+      await signInDemo();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : `Demo sign-in failed (${resolvedApiBaseUrl})`);
+    }
+  }
+
+  async function handleGoogleSignIn() {
+    setError(null);
+    try {
+      await signInWithGoogle();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : `Sign-in failed (${resolvedApiBaseUrl})`);
+    }
+  }
 
   return (
     <Screen
@@ -39,11 +67,12 @@ export default function SignInScreen() {
             <Text style={styles.pointText}>Compare picks with your watch team in a shared social feed.</Text>
           </View>
         </View>
+        {error ? <Text style={styles.error}>{error}</Text> : null}
         {isExpoGo ? (
           <Pressable
             accessibilityRole="button"
             disabled={isLoading}
-            onPress={signInDemo}
+            onPress={() => void handleDemoSignIn()}
             style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
           >
             <Text style={styles.buttonLabel}>{isLoading ? "Loading..." : "Continue in Demo Mode"}</Text>
@@ -52,7 +81,7 @@ export default function SignInScreen() {
           <Pressable
             accessibilityRole="button"
             disabled={isLoading}
-            onPress={signInWithGoogle}
+            onPress={() => void handleGoogleSignIn()}
             style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
           >
             <Text style={styles.buttonLabel}>
@@ -124,5 +153,10 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "800",
     textAlign: "center",
+  },
+  error: {
+    color: colors.danger,
+    fontSize: 13,
+    lineHeight: 18,
   },
 });

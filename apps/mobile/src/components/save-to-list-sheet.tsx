@@ -35,10 +35,21 @@ type Props = {
 
 export function SaveToListSheet({ visible, token, titleId, source, onClose, onSaved, onError }: Props) {
   const [lists, setLists] = useState<WatchlistSummary[]>([]);
+  const [selectedListId, setSelectedListId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [newDescription, setNewDescription] = useState("");
   const [isBusy, setIsBusy] = useState(false);
+
+  useEffect(() => {
+    if (!visible) {
+      setCreating(false);
+      setNewName("");
+      setNewDescription("");
+      setSelectedListId(null);
+      return;
+    }
+  }, [visible]);
 
   useEffect(() => {
     async function loadLists() {
@@ -48,6 +59,7 @@ export function SaveToListSheet({ visible, token, titleId, source, onClose, onSa
       try {
         const data = await apiRequest<WatchlistSummary[]>("/me/watchlist/lists", { token });
         setLists(data);
+        setSelectedListId(data[0]?.id ?? null);
       } catch (error) {
         onError?.(error instanceof Error ? error.message : "Failed to load lists");
       }
@@ -55,14 +67,15 @@ export function SaveToListSheet({ visible, token, titleId, source, onClose, onSa
     void loadLists();
   }, [onError, token, visible]);
 
-  async function saveToList(listId: string, listName: string) {
-    if (!token || !titleId || isBusy) {
+  async function saveToList() {
+    const selectedList = lists.find((item) => item.id === selectedListId) ?? null;
+    if (!token || !titleId || !selectedList || isBusy) {
       return;
     }
     setIsBusy(true);
     try {
       const list = await apiRequest<{ id: string; items: Array<{ content_title_id: string }> }>(
-        `/me/watchlist/lists/${listId}`,
+        `/me/watchlist/lists/${selectedList.id}`,
         { token }
       );
       const already = list.items.some((item) => item.content_title_id === titleId);
@@ -71,11 +84,11 @@ export function SaveToListSheet({ visible, token, titleId, source, onClose, onSa
         token,
         body: JSON.stringify({
           content_title_id: titleId,
-          list_id: listId,
+          list_id: selectedList.id,
           added_via: source,
         }),
       });
-      onSaved?.(listName, already);
+      onSaved?.(selectedList.name, already);
       onClose();
     } catch (error) {
       onError?.(error instanceof Error ? error.message : "Failed to save");
@@ -126,20 +139,40 @@ export function SaveToListSheet({ visible, token, titleId, source, onClose, onSa
         <View style={styles.sheet}>
           <Text style={styles.title}>Save to a List</Text>
           {!creating ? (
-            <ScrollView contentContainerStyle={styles.listBody}>
-              {lists.map((list) => (
-                <Pressable key={list.id} style={styles.listRow} onPress={() => void saveToList(list.id, list.name)}>
-                  <View>
-                    <Text style={styles.listName}>{list.name}</Text>
-                    <Text style={styles.listMeta}>{list.title_count} titles</Text>
-                  </View>
-                  <Text style={styles.selectLabel}>Select</Text>
-                </Pressable>
-              ))}
+            <View style={styles.listBody}>
+              <Text style={styles.subtitle}>Choose where to save this title.</Text>
+              <ScrollView contentContainerStyle={styles.listScroller}>
+                {lists.map((list) => (
+                  <Pressable
+                    key={list.id}
+                    style={[styles.listRow, selectedListId === list.id && styles.listRowSelected]}
+                    onPress={() => setSelectedListId(list.id)}
+                  >
+                    <View>
+                      <Text style={styles.listName}>{list.name}</Text>
+                      <Text style={styles.listMeta}>{list.title_count} titles</Text>
+                    </View>
+                    <Text style={styles.selectLabel}>{selectedListId === list.id ? "Selected" : "Select"}</Text>
+                  </Pressable>
+                ))}
+                {!lists.length ? <Text style={styles.emptyText}>No lists yet. Create one to save this title.</Text> : null}
+              </ScrollView>
               <Pressable style={styles.createButton} onPress={() => setCreating(true)}>
                 <Text style={styles.createButtonText}>+ Create New List</Text>
               </Pressable>
-            </ScrollView>
+              <View style={styles.footerActions}>
+                <Pressable style={styles.secondary} onPress={onClose}>
+                  <Text style={styles.secondaryText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.primary, (!selectedListId || isBusy) && styles.disabled]}
+                  disabled={!selectedListId || isBusy}
+                  onPress={() => void saveToList()}
+                >
+                  <Text style={styles.primaryText}>{isBusy ? "Saving..." : "Save"}</Text>
+                </Pressable>
+              </View>
+            </View>
           ) : (
             <View style={styles.createBody}>
               <TextInput
@@ -189,7 +222,9 @@ const styles = StyleSheet.create({
     maxHeight: "86%",
   },
   title: { color: colors.ink, fontSize: 20, fontWeight: "900" },
+  subtitle: { color: colors.muted, fontSize: 13, lineHeight: 20 },
   listBody: { gap: 8, paddingBottom: spacing.sm },
+  listScroller: { gap: 8, paddingBottom: spacing.sm },
   listRow: {
     borderRadius: 12,
     borderWidth: 1,
@@ -201,9 +236,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
+  listRowSelected: {
+    borderColor: colors.accent,
+    backgroundColor: "rgba(244,196,48,0.12)",
+  },
   listName: { color: colors.ink, fontWeight: "800", fontSize: 14 },
   listMeta: { color: colors.muted, fontSize: 12, marginTop: 2 },
   selectLabel: { color: colors.accent, fontWeight: "700", fontSize: 12 },
+  emptyText: { color: colors.muted, fontSize: 13, lineHeight: 20, paddingVertical: 6 },
   createButton: {
     borderRadius: radii.pill,
     borderWidth: 1,
@@ -213,6 +253,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   createButtonText: { color: colors.ink, fontWeight: "700", fontSize: 13 },
+  footerActions: { flexDirection: "row", gap: spacing.sm },
   createBody: { gap: spacing.sm },
   input: {
     borderWidth: 1,
@@ -245,4 +286,3 @@ const styles = StyleSheet.create({
   primaryText: { color: colors.background, fontSize: 12, fontWeight: "800" },
   disabled: { opacity: 0.5 },
 });
-

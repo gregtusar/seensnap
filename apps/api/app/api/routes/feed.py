@@ -275,9 +275,9 @@ def _to_title_response(title) -> TitleResponse:
         for person in cast
         if isinstance(person, dict) and person.get("name")
     ][:5]
-    poster_url = title.poster_url or "/media/brand/title_placeholder.jpg"
+    poster_url = title.poster_url or "/media/brand/seensnap_logo.png"
     if "seensnap_logo" in poster_url:
-        poster_url = "/media/brand/title_placeholder.jpg"
+        poster_url = "/media/brand/seensnap_logo.png"
     backdrop_url = title.backdrop_url or poster_url
     if backdrop_url and "seensnap_logo" in backdrop_url:
         backdrop_url = poster_url

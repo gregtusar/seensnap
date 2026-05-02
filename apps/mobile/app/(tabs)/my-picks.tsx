@@ -15,10 +15,11 @@ import {
 import { useFocusEffect } from "@react-navigation/native";
 
 import { Screen } from "@/components/screen";
+import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, radii, spacing } from "@/constants/theme";
 import { useAuth } from "@/lib/auth";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, resolvedApiBaseUrl } from "@/lib/api";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 
 type WatchlistSummary = {
@@ -73,6 +74,8 @@ export default function MyPicksScreen() {
   const [showDetails, setShowDetails] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailTitle, setDetailTitle] = useState<UniversalTitle | null>(null);
+  const [showSaveSheet, setShowSaveSheet] = useState(false);
+  const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
 
   const totals = useMemo(() => {
     const totalTitles = lists.reduce((acc, item) => acc + item.title_count, 0);
@@ -280,7 +283,7 @@ export default function MyPicksScreen() {
         </View>
 
         {isLoading ? <ActivityIndicator color={colors.accent} /> : null}
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {error ? <Text style={styles.error}>{error} ({resolvedApiBaseUrl})</Text> : null}
         {!isLoading && selectedList && selectedList.items.length === 0 ? (
           <View style={styles.empty}>
             <Text style={styles.emptyTitle}>Nothing here yet</Text>
@@ -337,8 +340,27 @@ export default function MyPicksScreen() {
         loading={detailLoading}
         title={detailTitle}
         onClose={() => setShowDetails(false)}
-        onSave={() => setToast("Use Save from title cards for now")}
+        onSaveTitle={(detail) => {
+          setSaveTitleId(detail.id);
+          setShowSaveSheet(true);
+        }}
         onPost={() => setShowDetails(false)}
+      />
+
+      <SaveToListSheet
+        visible={showSaveSheet}
+        token={sessionToken}
+        titleId={saveTitleId}
+        source="my_picks"
+        onClose={() => {
+          setShowSaveSheet(false);
+          setSaveTitleId(null);
+        }}
+        onSaved={(listName, alreadySaved) => {
+          void loadLists();
+          setToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`);
+        }}
+        onError={(message) => setError(message)}
       />
 
       {toast ? (
@@ -433,4 +455,3 @@ const styles = StyleSheet.create({
   toast: { position: "absolute", left: spacing.lg, right: spacing.lg, bottom: spacing.xl, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, alignItems: "center", paddingVertical: 10 },
   toastText: { color: colors.success, fontWeight: "800", fontSize: 12 },
 });
-

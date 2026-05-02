@@ -6,6 +6,7 @@ import { colors } from "@/constants/theme";
 export default function TabsLayout() {
   return (
     <Tabs
+      initialRouteName="for-you"
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.accent,
@@ -24,10 +25,17 @@ export default function TabsLayout() {
       }}
     >
       <Tabs.Screen
+        name="for-you"
+        options={{
+          title: "For You",
+          tabBarIcon: ({ color, size }) => <Ionicons name="sparkles" color={color} size={size} />,
+        }}
+      />
+      <Tabs.Screen
         name="index"
         options={{
-          title: "Home",
-          tabBarIcon: ({ color, size }) => <Ionicons name="home" color={color} size={size} />,
+          title: "Discover",
+          tabBarIcon: ({ color, size }) => <Ionicons name="compass" color={color} size={size} />,
         }}
       />
       <Tabs.Screen

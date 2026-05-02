@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pathlib import Path
 
 
 class Settings(BaseSettings):
@@ -18,6 +19,13 @@ class Settings(BaseSettings):
     uploads_dir: str = "uploads"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    def uploads_path(self) -> Path:
+        configured = Path(self.uploads_dir)
+        if configured.is_absolute():
+            return configured
+        # Anchor relative uploads path to the API app directory regardless of process CWD.
+        return Path(__file__).resolve().parents[2] / configured
 
 
 settings = Settings()

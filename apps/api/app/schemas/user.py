@@ -3,6 +3,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.schemas.taste import CompatibilityResponse, TasteGenreScoreResponse, TasteLabelResponse, TasteTitleReferenceResponse
+
 
 class ProfileResponse(BaseModel):
     user_id: UUID
@@ -20,6 +22,10 @@ class PreferencesResponse(BaseModel):
     preferred_regions: list[str]
     connected_streaming_services: list[str]
     instagram_share_default: bool
+
+
+class PreferencesUpdateRequest(BaseModel):
+    connected_streaming_services: list[str] | None = None
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -40,6 +46,13 @@ class PublicProfileResponse(BaseModel):
     post_count: int = 0
     is_following: bool = False
     can_follow: bool = True
+    taste_labels: list[TasteLabelResponse] = Field(default_factory=list)
+    favorite_genres: list[TasteGenreScoreResponse] = Field(default_factory=list)
+    favorite_platforms: list[str] = Field(default_factory=list)
+    profile_summary: str | None = None
+    current_obsessions: list[TasteTitleReferenceResponse] = Field(default_factory=list)
+    top_posters: list[str] = Field(default_factory=list)
+    compatibility: CompatibilityResponse | None = None
 
 
 class PublicProfilePostResponse(BaseModel):

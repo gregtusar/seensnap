@@ -8,10 +8,21 @@ from sqlalchemy import select
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentAvailability, ContentTitle
 from app.models.social import Watchlist, WatchlistItem
-from app.schemas.content import RecommendationResponse, StreamingOptionResponse, TitleResponse
+from app.schemas.content import (
+    RecommendationResponse,
+    RelatedTitleResponse,
+    StreamingAvailabilityResponse,
+    StreamingOptionResponse,
+    TitleImageResponse,
+    TitlePersonResponse,
+    TitleResponse,
+)
+from app.schemas.taste import SwipeRecordCreate, SwipeRecordResponse
+from app.services.taste import get_social_recommendations, record_swipe
 from app.services.tmdb import (
     TmdbConfigurationError,
     discover_titles_by_genre,
+    fetch_title_gallery,
     list_tmdb_genres,
     fetch_related_titles,
     fetch_trending_titles,
@@ -75,7 +86,24 @@ def get_title(title_id: UUID, db: DbSession) -> TitleResponse:
         )
     except httpx.HTTPError:
         wikipedia_metadata = None
-    return _to_title_response(title, wikipedia_metadata)
+    try:
+        refresh_streaming_options(db, title)
+    except TmdbConfigurationError:
+        pass
+    try:
+        gallery = fetch_title_gallery(title, limit=14)
+    except TmdbConfigurationError:
+        gallery = []
+    try:
+        related_titles = fetch_related_titles(db, title, limit=10)
+    except TmdbConfigurationError:
+        related_titles = []
+    availability = db.scalars(
+        select(ContentAvailability)
+        .where(ContentAvailability.content_title_id == title.id)
+        .order_by(ContentAvailability.provider_name.asc())
+    ).all()
+    return _to_title_response(title, wikipedia_metadata, availability, gallery, related_titles)
 
 
 @router.get("/{title_id}/streaming-options", response_model=list[StreamingOptionResponse])
@@ -98,78 +126,53 @@ def get_my_recommendations(
     limit: int = Query(default=24, ge=6, le=60),
     preferred_type: str | None = Query(default=None, pattern="^(movie|show)$"),
 ) -> list[RecommendationResponse]:
-    saved_ids = db.scalars(
-        select(WatchlistItem.content_title_id)
-        .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-        .where(Watchlist.owner_user_id == current_user.id)
-    ).all()
-    saved_set = set(saved_ids)
-    seed_titles = db.scalars(
-        select(ContentTitle)
-        .where(ContentTitle.id.in_(saved_set))
-        .order_by(ContentTitle.release_date.desc())
-        .limit(8)
-    ).all() if saved_set else []
-
     ranked: dict[UUID, dict] = {}
     try:
-        if seed_titles:
-            for seed in seed_titles:
-                related = fetch_related_titles(db, seed, limit=12)
-                for idx, candidate in enumerate(related):
-                    if candidate.id in saved_set:
-                        continue
-                    weight = max(12 - idx, 1)
-                    entry = ranked.setdefault(
-                        candidate.id,
-                        {"title": candidate, "score": 0, "seed": seed, "occurrences": 0},
-                    )
-                    entry["score"] += weight
-                    entry["occurrences"] += 1
-
-            chosen = sorted(
-                ranked.values(),
-                key=lambda item: (
-                    item["score"],
-                    item["occurrences"],
-                    float(item["title"].tmdb_vote_average or 0),
-                ),
-                reverse=True,
-            )
-            if preferred_type == "movie":
-                chosen = [item for item in chosen if item["title"].content_type == "movie"]
-            elif preferred_type == "show":
-                chosen = [item for item in chosen if item["title"].content_type == "series"]
-            chosen = chosen[:limit]
-            if chosen:
-                return [
-                    RecommendationResponse(
-                        title=_to_title_response(item["title"]),
-                        reason=f"Because you saved {item['seed'].title}",
-                        seed_title_id=item["seed"].id,
-                    )
-                    for item in chosen
-                ]
-        trending = fetch_trending_titles(db, limit=limit * 2)
-        fallback = [title for title in trending if title.id not in saved_set]
-        if preferred_type == "movie":
-            fallback = [title for title in fallback if title.content_type == "movie"]
-        elif preferred_type == "show":
-            fallback = [title for title in fallback if title.content_type == "series"]
-        fallback = fallback[:limit]
-        return [
-            RecommendationResponse(
-                title=_to_title_response(title),
-                reason="Trending right now",
-                seed_title_id=None,
-            )
-            for title in fallback
-        ]
+        return get_social_recommendations(
+            db,
+            current_user.id,
+            limit=limit,
+            preferred_type=preferred_type,
+        )
     except TmdbConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
-def _to_title_response(title: ContentTitle, wikipedia_metadata=None) -> TitleResponse:
+@router.post("/swipes", response_model=SwipeRecordResponse)
+def record_title_swipe(
+    payload: SwipeRecordCreate,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> SwipeRecordResponse:
+    title = db.scalar(select(ContentTitle).where(ContentTitle.id == payload.title_id))
+    if title is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not found")
+    try:
+        record = record_swipe(
+            db,
+            current_user.id,
+            title_id=payload.title_id,
+            direction=payload.direction,
+            pause_ms=payload.pause_ms,
+            session_id=payload.session_id,
+            reason=payload.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return SwipeRecordResponse(
+        title_id=payload.title_id,
+        direction=payload.direction,
+        updated_at=record.created_at,
+    )
+
+
+def _to_title_response(
+    title: ContentTitle,
+    wikipedia_metadata=None,
+    availability: list[ContentAvailability] | None = None,
+    gallery: list[dict] | None = None,
+    related_titles: list[ContentTitle] | None = None,
+) -> TitleResponse:
     metadata = title.metadata_raw or {}
     credits = metadata.get("credits", {}) if isinstance(metadata, dict) else {}
     crew = credits.get("crew", []) if isinstance(credits, dict) else []
@@ -233,6 +236,42 @@ def _to_title_response(title: ContentTitle, wikipedia_metadata=None) -> TitleRes
     )
     wikipedia_url = wikipedia_metadata.wikipedia_url if wikipedia_metadata else None
     source_label = "wikipedia" if wikipedia_metadata else "tmdb_fallback"
+    cast_people = [
+        TitlePersonResponse(
+            name=person.get("name") or "Unknown",
+            role=person.get("character") or "Actor",
+            headshot_url=f"https://image.tmdb.org/t/p/w185{person['profile_path']}"
+            if person.get("profile_path")
+            else None,
+        )
+        for person in cast
+        if isinstance(person, dict) and person.get("name")
+    ][:5]
+    creators_people = []
+    creator_roles = ["Creator", "Director", "Writer", "Screenplay", "Executive Producer"]
+    seen_creator_keys: set[tuple[str, str]] = set()
+    for person in crew:
+        if not isinstance(person, dict):
+            continue
+        role = person.get("job")
+        name = person.get("name")
+        if role not in creator_roles or not name:
+            continue
+        key = (str(name), str(role))
+        if key in seen_creator_keys:
+            continue
+        seen_creator_keys.add(key)
+        creators_people.append(
+            TitlePersonResponse(
+                name=str(name),
+                role=str(role),
+                headshot_url=f"https://image.tmdb.org/t/p/w185{person['profile_path']}"
+                if person.get("profile_path")
+                else None,
+            )
+        )
+        if len(creators_people) >= 3:
+            break
 
     return TitleResponse(
         id=title.id,
@@ -256,6 +295,46 @@ def _to_title_response(title: ContentTitle, wikipedia_metadata=None) -> TitleRes
         top_cast=cast_names,
         wikipedia_url=wikipedia_url,
         metadata_source=source_label,
+        streaming_availability=[
+            StreamingAvailabilityResponse(
+                service=option.provider_code,
+                service_name=option.provider_name,
+                app_url=option.deeplink_url,
+                web_url=option.web_url,
+            )
+            for option in (availability or [])
+            if option.deeplink_url or option.web_url
+        ],
+        image_gallery=[
+            TitleImageResponse(
+                url=str(image.get("url")),
+                kind=str(image.get("kind") or "backdrop"),
+                width=image.get("width") if isinstance(image.get("width"), int) else None,
+                height=image.get("height") if isinstance(image.get("height"), int) else None,
+            )
+            for image in (
+                gallery
+                or [
+                    {"url": title.backdrop_url, "kind": "backdrop"},
+                    {"url": image_url, "kind": "poster"},
+                ]
+            )
+            if image.get("url")
+        ],
+        cast=cast_people or [TitlePersonResponse(name=name, role="Actor", headshot_url=None) for name in cast_names[:5]],
+        creators=creators_people
+        or ([TitlePersonResponse(name=director_name, role="Director", headshot_url=None)] if director_name else []),
+        related_titles=[
+            RelatedTitleResponse(
+                id=related.id,
+                title=related.title,
+                content_type=related.content_type,
+                poster_url=related.poster_url,
+                release_date=related.release_date,
+            )
+            for related in (related_titles or [])
+            if related.id != title.id
+        ],
     )
 
 

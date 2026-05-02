@@ -1,4 +1,3 @@
-from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
@@ -7,7 +6,23 @@ from sqlalchemy import func, select
 from app.api.dependencies import CurrentUser, DbSession
 from app.core.config import settings
 from app.models.user import UserPreferences, UserProfile
-from app.schemas.user import PreferencesResponse, ProfileResponse, ProfileUpdateRequest
+from app.schemas.user import (
+    PreferencesResponse,
+    PreferencesUpdateRequest,
+    ProfileResponse,
+    ProfileUpdateRequest,
+)
+
+SUPPORTED_STREAMING_SERVICES = {
+    "netflix",
+    "prime_video",
+    "apple_tv_plus",
+    "hbo_max",
+    "disney_plus",
+    "hulu",
+    "paramount_plus",
+    "peacock",
+}
 
 router = APIRouter()
 
@@ -105,7 +120,7 @@ def upload_avatar(
     if len(data) > 6 * 1024 * 1024:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Image too large (max 6MB)")
 
-    avatars_dir = Path(settings.uploads_dir) / "avatars"
+    avatars_dir = settings.uploads_path() / "avatars"
     avatars_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{current_user.id}_{uuid4().hex}{ext}"
     target = avatars_dir / filename
@@ -136,7 +151,7 @@ def upload_avatar(
 def delete_avatar(current_user: CurrentUser, db: DbSession) -> ProfileResponse:
     profile = _ensure_profile(db, current_user.id, current_user.email)
     if profile.avatar_url and "/uploads/avatars/" in profile.avatar_url:
-        avatars_dir = Path(settings.uploads_dir) / "avatars"
+        avatars_dir = settings.uploads_path() / "avatars"
         old_name = profile.avatar_url.split("/uploads/avatars/")[-1]
         old_path = avatars_dir / old_name
         if old_path.exists():
@@ -166,6 +181,44 @@ def get_preferences(current_user: CurrentUser, db: DbSession) -> PreferencesResp
             connected_streaming_services=[],
             instagram_share_default=True,
         )
+    return PreferencesResponse(
+        notifications_enabled=preferences.notifications_enabled,
+        preferred_regions=preferences.preferred_regions,
+        connected_streaming_services=preferences.connected_streaming_services,
+        instagram_share_default=preferences.instagram_share_default,
+    )
+
+
+@router.patch("/preferences", response_model=PreferencesResponse)
+def patch_preferences(
+    payload: PreferencesUpdateRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> PreferencesResponse:
+    preferences = db.scalar(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
+    if preferences is None:
+        preferences = UserPreferences(user_id=current_user.id)
+        db.add(preferences)
+        db.flush()
+
+    if payload.connected_streaming_services is not None:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for service in payload.connected_streaming_services:
+            key = service.strip().lower()
+            if not key or key in seen:
+                continue
+            if key not in SUPPORTED_STREAMING_SERVICES:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Unsupported streaming service: {service}",
+                )
+            normalized.append(key)
+            seen.add(key)
+        preferences.connected_streaming_services = normalized
+
+    db.commit()
+    db.refresh(preferences)
     return PreferencesResponse(
         notifications_enabled=preferences.notifications_enabled,
         preferred_regions=preferences.preferred_regions,

@@ -1,4 +1,5 @@
 import { apiRequest } from "@/lib/api";
+import type { StreamingAvailability } from "@/lib/streaming";
 
 export type TitleSeed = {
   id: string;
@@ -29,6 +30,35 @@ type TitleResponse = {
   top_cast?: string[];
   wikipedia_url?: string | null;
   metadata_source?: string;
+  streaming_availability?: Array<{
+    service: string;
+    service_name: string;
+    app_url?: string | null;
+    web_url?: string | null;
+  }>;
+  image_gallery?: Array<{
+    url: string;
+    kind: string;
+    width?: number | null;
+    height?: number | null;
+  }>;
+  cast?: Array<{
+    name: string;
+    role: string;
+    headshot_url?: string | null;
+  }>;
+  creators?: Array<{
+    name: string;
+    role: string;
+    headshot_url?: string | null;
+  }>;
+  related_titles?: Array<{
+    id: string;
+    title: string;
+    content_type: string;
+    poster_url?: string | null;
+    release_date?: string | null;
+  }>;
 };
 
 export type UniversalTitle = {
@@ -54,6 +84,30 @@ export type UniversalTitle = {
     cast: string[];
   };
   metadataSource: string;
+  streamingAvailability: StreamingAvailability[];
+  imageGallery: Array<{
+    url: string;
+    kind: string;
+    width: number | null;
+    height: number | null;
+  }>;
+  cast: Array<{
+    name: string;
+    role: string;
+    headshotUrl: string | null;
+  }>;
+  creators: Array<{
+    name: string;
+    role: string;
+    headshotUrl: string | null;
+  }>;
+  relatedTitles: Array<{
+    id: string;
+    title: string;
+    mediaType: "movie" | "tv";
+    posterUrl: string | null;
+    year: number | null;
+  }>;
 };
 
 function normalizeFromApi(data: TitleResponse): UniversalTitle {
@@ -82,6 +136,35 @@ function normalizeFromApi(data: TitleResponse): UniversalTitle {
       cast: data.top_cast ?? [],
     },
     metadataSource: data.metadata_source ?? "tmdb_fallback",
+    streamingAvailability: (data.streaming_availability ?? []).map((entry) => ({
+      service: entry.service,
+      serviceName: entry.service_name,
+      appUrl: entry.app_url ?? null,
+      webUrl: entry.web_url ?? null,
+    })),
+    imageGallery: (data.image_gallery ?? []).map((entry) => ({
+      url: entry.url,
+      kind: entry.kind,
+      width: typeof entry.width === "number" ? entry.width : null,
+      height: typeof entry.height === "number" ? entry.height : null,
+    })),
+    cast: (data.cast ?? []).map((entry) => ({
+      name: entry.name,
+      role: entry.role,
+      headshotUrl: entry.headshot_url ?? null,
+    })),
+    creators: (data.creators ?? []).map((entry) => ({
+      name: entry.name,
+      role: entry.role,
+      headshotUrl: entry.headshot_url ?? null,
+    })),
+    relatedTitles: (data.related_titles ?? []).map((entry) => ({
+      id: entry.id,
+      title: entry.title,
+      mediaType: entry.content_type === "movie" ? "movie" : "tv",
+      posterUrl: entry.poster_url ?? null,
+      year: entry.release_date ? Number(String(entry.release_date).slice(0, 4)) : null,
+    })),
   };
 }
 
@@ -110,6 +193,14 @@ function normalizeFromSeed(seed: TitleSeed): UniversalTitle {
       cast: [],
     },
     metadataSource: "fallback",
+    streamingAvailability: [],
+    imageGallery: [
+      ...(seed.backdrop_url ? [{ url: seed.backdrop_url, kind: "backdrop", width: null, height: null }] : []),
+      ...(seed.poster_url ? [{ url: seed.poster_url, kind: "poster", width: null, height: null }] : []),
+    ],
+    cast: [],
+    creators: [],
+    relatedTitles: [],
   };
 }
 

@@ -1,9 +1,23 @@
 import Constants from "expo-constants";
 
+function isLoopbackApiUrl(value?: string | null) {
+  if (!value?.trim()) {
+    return false;
+  }
+  try {
+    const host = new URL(value.trim()).hostname;
+    return host === "127.0.0.1" || host === "localhost";
+  } catch {
+    return false;
+  }
+}
+
 function resolveApiBaseUrl() {
+  const configApiBaseUrl =
+    (Constants.expoConfig?.extra as { apiBaseUrl?: string } | undefined)?.apiBaseUrl?.trim() ?? "";
   const configured = process.env.EXPO_PUBLIC_API_BASE_URL;
-  if (configured && !configured.includes("127.0.0.1") && !configured.includes("localhost")) {
-    return configured;
+  if (configured?.trim() && !isLoopbackApiUrl(configured)) {
+    return configured.trim();
   }
 
   const expoManifest = Constants as typeof Constants & {
@@ -15,10 +29,15 @@ function resolveApiBaseUrl() {
     return `http://${host}:8000/api/v1`;
   }
 
-  return configured ?? "http://127.0.0.1:8000/api/v1";
+  if (configApiBaseUrl && !isLoopbackApiUrl(configApiBaseUrl)) {
+    return configApiBaseUrl;
+  }
+
+  return configured?.trim() || configApiBaseUrl || "http://127.0.0.1:8000/api/v1";
 }
 
 const apiBaseUrl = resolveApiBaseUrl();
+export const resolvedApiBaseUrl = apiBaseUrl;
 
 function resolveApiOrigin() {
   try {
@@ -35,6 +54,8 @@ type ApiRequestOptions = RequestInit & {
 };
 
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
   const headers = new Headers(options.headers);
   const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   if (!headers.has("Content-Type") && !isFormData) {
@@ -45,10 +66,21 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     headers.set("Authorization", `Bearer ${options.token}`);
   }
 
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    ...options,
-    headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${apiBaseUrl}${path}`, {
+      ...options,
+      headers,
+      signal: options.signal ?? controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Request timed out (${apiBaseUrl})`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     const message = await response.text();

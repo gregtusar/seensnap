@@ -26,6 +26,11 @@ class TitleResponse(BaseModel):
     top_cast: list[str] = Field(default_factory=list)
     wikipedia_url: str | None = None
     metadata_source: str = "tmdb_fallback"
+    streaming_availability: list["StreamingAvailabilityResponse"] = Field(default_factory=list)
+    image_gallery: list["TitleImageResponse"] = Field(default_factory=list)
+    cast: list["TitlePersonResponse"] = Field(default_factory=list)
+    creators: list["TitlePersonResponse"] = Field(default_factory=list)
+    related_titles: list["RelatedTitleResponse"] = Field(default_factory=list)
 
 
 class StreamingOptionResponse(BaseModel):
@@ -35,6 +40,34 @@ class StreamingOptionResponse(BaseModel):
     deeplink_url: str | None = None
     web_url: str | None = None
     is_connected_priority: bool
+
+
+class StreamingAvailabilityResponse(BaseModel):
+    service: str
+    service_name: str
+    app_url: str | None = None
+    web_url: str | None = None
+
+
+class TitleImageResponse(BaseModel):
+    url: str
+    kind: str
+    width: int | None = None
+    height: int | None = None
+
+
+class TitlePersonResponse(BaseModel):
+    name: str
+    role: str
+    headshot_url: str | None = None
+
+
+class RelatedTitleResponse(BaseModel):
+    id: UUID
+    title: str
+    content_type: str
+    poster_url: str | None = None
+    release_date: date | None = None
 
 
 class RecommendationResponse(BaseModel):

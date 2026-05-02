@@ -2,20 +2,40 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+import os
 import random
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.content import ContentTitle
-from app.models.social import FeedComment, FeedEvent, FeedReaction, UserFollow
+from app.models.social import (
+    FeedComment,
+    FeedEvent,
+    FeedReaction,
+    Team,
+    TeamActivity,
+    TeamMember,
+    TeamRanking,
+    TeamTitle,
+    UserFollow,
+    Watchlist,
+    WatchlistItem,
+)
 from app.models.user import User, UserPreferences, UserProfile
+from app.services.demo import DEMO_EMAIL
 from app.services.feed import create_feed_event
 from app.services.follows import ensure_follows_table
+from app.services.tmdb import search_titles as tmdb_search_titles, refresh_title_details
+from app.services.watchlists import ensure_default_watchlists
+from app.services.wikipedia import resolve_wikipedia_metadata
 
 SEED_TAG = "demo_feed_v5"
 MEDIA_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+LOGO_AVATAR_URL = "/media/brand/seensnap_logo.png"
+SCENESNAP_ACCOUNT_CODES = {"platform_trending", "industry_news", "u_demo"}
 
 DEMO_USERS = [
     {"code": "u1", "name": "Maya Chen", "username": "framebyframe", "bio": "Slow cinema. Long takes. Emotional damage.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_framebyframe.jpg"},
@@ -32,12 +52,55 @@ DEMO_USERS = [
     {"code": "v2", "name": "Diego Valez", "username": "DiegoValez", "bio": "Director.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_DiegoValez.jpg", "verified": True},
     {"code": "v3", "name": "Rae Kim", "username": "RaeKimStudio", "bio": "Writer & Showrunner.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_RaeKimStudio.jpg", "verified": True},
     {"code": "v4", "name": "Northlight Films", "username": "NorthlightFilms", "bio": "Independent studio.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_NorthlightFilms.jpg", "verified": True},
-    {"code": "platform_trending", "name": "Scene Snap Trending", "username": "seensnap_trending", "bio": "What the platform is watching right now.", "avatar": "/media/brand/seensnap_logo.png", "verified": True},
-    {"code": "industry_news", "name": "Scene Snap Industry", "username": "industry_news", "bio": "Industry updates and release radar.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_industry_news.jpg"},
-    {"code": "u_demo", "name": "SeenSnap Demo", "username": "seensnap_demo", "bio": "Official SeenSnap demo account.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_seensnap_demo.jpg"},
+    {"code": "platform_trending", "name": "Scene Snap Trending", "username": "seensnap_trending", "bio": "What the platform is watching right now.", "avatar": LOGO_AVATAR_URL, "verified": True},
+    {"code": "industry_news", "name": "Scene Snap Industry", "username": "industry_news", "bio": "Industry updates and release radar.", "avatar": LOGO_AVATAR_URL},
+    {"code": "u_demo", "name": "SeenSnap Demo", "username": "seensnap.demo", "bio": "Official SeenSnap demo account.", "avatar": LOGO_AVATAR_URL},
 ]
 
 FOLLOWING_SEED = ["u1", "u2", "u4", "u7", "u8"]
+
+WATCHLIST_SEED = {
+    "My Picks": ["Past Lives", "The Bear", "Severance", "Portrait of a Lady on Fire"],
+    "Want to Watch": ["Challengers", "Poor Things", "Anatomy of a Fall", "Dune: Part Two"],
+    "Favorites": ["Succession", "Moonlight", "Parasite", "Aftersun"],
+}
+
+WATCH_TEAM_SEED = [
+    {
+        "name": "Prestige Spiral",
+        "slug": "demo-prestige-spiral",
+        "description": "High-stakes TV, auteur flexes, and dramatic overthinking.",
+        "invite_code": "spiral24",
+        "icon": "TV",
+        "members": ["u_demo", "u1", "u2", "u4", "u8"],
+        "titles": [
+            {"title": "Succession", "added_by": "u2", "note": "Nobody does power games better.", "rank": 1, "score": 9.8, "movement": "same", "weeks_on_list": 6},
+            {"title": "Severance", "added_by": "u8", "note": "Office dread but make it transcendent.", "rank": 2, "score": 9.4, "movement": "up", "weeks_on_list": 4},
+            {"title": "The Bear", "added_by": "u_demo", "note": "Stress television at its absolute peak.", "rank": 3, "score": 9.1, "movement": "up", "weeks_on_list": 3},
+        ],
+        "posts": [
+            {"author": "u_demo", "title": "Severance", "caption": "Need a full group watch when season two lands.", "likes": 148, "comments": ["I am so ready.", "Theories only get stranger.", "Count me in."]},
+            {"author": "u4", "title": "The Bear", "caption": "Rewatched Forks and it somehow got better.", "likes": 97, "comments": ["Best episode in the series.", "Ebon Moss-Bachrach was unreal."]},
+        ],
+    },
+    {
+        "name": "After Hours",
+        "slug": "demo-after-hours",
+        "description": "Horror, arthouse heartbreak, and immaculate vibes.",
+        "invite_code": "afterhrs",
+        "icon": "MOON",
+        "members": ["u_demo", "u5", "u6", "u7", "u9"],
+        "titles": [
+            {"title": "Midsommar", "added_by": "u5", "note": "Sunlit panic spiral cinema.", "rank": 1, "score": 9.2, "movement": "same", "weeks_on_list": 5},
+            {"title": "Aftersun", "added_by": "u6", "note": "Emotionally unsafe in the best way.", "rank": 2, "score": 9.0, "movement": "up", "weeks_on_list": 4},
+            {"title": "Portrait of a Lady on Fire", "added_by": "u7", "note": "Every frame hurts beautifully.", "rank": 3, "score": 8.9, "movement": "down", "weeks_on_list": 6},
+        ],
+        "posts": [
+            {"author": "u5", "title": "Midsommar", "caption": "This team was built for daylight horror discourse.", "likes": 132, "comments": ["Absolutely cursed.", "Still thinking about the flower dress."]},
+            {"author": "u7", "title": "Portrait of a Lady on Fire", "caption": "Can we talk about that final scene again or is it too soon?", "likes": 121, "comments": ["Never too soon.", "I still haven’t recovered.", "The score destroys me."]},
+        ],
+    },
+]
 
 TV_TITLE_HINTS = {
     "Succession", "The Bear", "Girls", "Euphoria", "Severance", "Gilmore Girls", "The Crown", "Breaking Bad",
@@ -161,7 +224,39 @@ def _stable_tmdb_id(title: str) -> int:
 
 
 def _uploads_root() -> Path:
-    return Path(__file__).resolve().parents[2] / "uploads"
+    return settings.uploads_path()
+
+
+def _is_external_image_url(url: str | None) -> bool:
+    if not url:
+        return False
+    lowered = url.lower()
+    return lowered.startswith("https://") and (
+        "image.tmdb.org" in lowered
+        or "wikipedia.org" in lowered
+        or "wikimedia.org" in lowered
+    )
+
+
+def _resolve_tmdb_match(db: Session, title_name: str, content_type: str) -> ContentTitle | None:
+    try:
+        candidates = tmdb_search_titles(db, title_name)
+    except Exception:
+        return None
+    if not candidates:
+        return None
+
+    normalized = title_name.strip().lower()
+    exact = [
+        row
+        for row in candidates
+        if row.content_type == content_type and (row.title or "").strip().lower() == normalized
+    ]
+    selected = exact[0] if exact else next((row for row in candidates if row.content_type == content_type), candidates[0])
+    try:
+        return refresh_title_details(db, selected)
+    except Exception:
+        return selected
 
 
 def _media_urls(subdir: str) -> list[str]:
@@ -176,28 +271,37 @@ def _media_urls(subdir: str) -> list[str]:
 
 
 def _avatar_assignments() -> dict[str, str]:
-    non_platform_codes = [entry["code"] for entry in DEMO_USERS if entry["code"] != "platform_trending"]
-    # Use the full uploaded user-media pool so fake users get visibly distinct avatars.
-    user_uploads = [url for url in _media_urls("users") if "seensnap_logo" not in url]
-    pool = user_uploads or [url for url in _media_urls("avatars") if "seensnap_logo" not in url]
-    if not pool:
-        return {code: "/media/brand/title_placeholder.jpg" for code in non_platform_codes}
+    assignable_codes = [entry["code"] for entry in DEMO_USERS if entry["code"] not in SCENESNAP_ACCOUNT_CODES]
 
-    rng = random.Random(20260308)
-    rng.shuffle(pool)
-    return {code: pool[idx % len(pool)] for idx, code in enumerate(non_platform_codes)}
+    # Prefer explicit avatar pool assets uploaded for demo users.
+    user_uploads = [url for url in _media_urls("users") if "seensnap_logo" not in url.lower()]
+    preferred_pool = [url for url in user_uploads if "/avatar_pool_" in url.lower()]
+
+    # Fall back to non-placeholder user uploads, then generic avatar uploads.
+    filtered_user_uploads = [url for url in user_uploads if "headshot_to_be_provided" not in url.lower()]
+    fallback_uploads = [url for url in _media_urls("avatars") if "seensnap_logo" not in url.lower()]
+    pool = preferred_pool or filtered_user_uploads or fallback_uploads
+    if not pool:
+        return {code: "/media/brand/title_placeholder.jpg" for code in assignable_codes}
+
+    # Optional seed for reproducibility when needed; defaults to fresh random assignment.
+    seed_value = os.getenv("SEENSNAP_DEMO_AVATAR_SEED")
+    rng = random.Random(int(seed_value)) if seed_value and seed_value.isdigit() else random.Random()
+    shuffled = list(pool)
+    rng.shuffle(shuffled)
+    return {code: shuffled[idx % len(shuffled)] for idx, code in enumerate(assignable_codes)}
 
 
 def _title_fallback_poster(title_name: str) -> str:
     posters = [url for url in _media_urls("titles") if "seensnap_logo" not in url]
     if not posters:
-        return "/media/brand/title_placeholder.jpg"
+        return "/media/brand/seensnap_logo.png"
     index = sum(ord(char) for char in title_name) % len(posters)
     return posters[index]
 
 
 def _upsert_user(db: Session, user_data: dict) -> User:
-    email = f"{user_data['username'].lower()}@demo.seensnap.local"
+    email = DEMO_EMAIL if user_data["code"] == "u_demo" else f"{user_data['username'].lower()}@demo.seensnap.local"
     user = db.scalar(select(User).where(func.lower(User.email) == email))
     if user is None:
         user = User(email=email, auth_provider="demo")
@@ -224,21 +328,57 @@ def _upsert_user(db: Session, user_data: dict) -> User:
 
 
 def _upsert_title(db: Session, title_name: str) -> ContentTitle:
+    content_type = _infer_content_type(title_name)
     fallback_poster = _title_fallback_poster(title_name)
-    existing = db.scalar(select(ContentTitle).where(func.lower(ContentTitle.title) == title_name.lower()))
+
+    # Prefer a TMDB-backed row first so social feed cards use real posters.
+    tmdb_row = _resolve_tmdb_match(db, title_name, content_type)
+    if tmdb_row is not None:
+        if not _is_external_image_url(tmdb_row.poster_url):
+            try:
+                wiki = resolve_wikipedia_metadata(
+                    title=tmdb_row.title or title_name,
+                    release_date=tmdb_row.release_date,
+                    content_type=tmdb_row.content_type,
+                )
+            except Exception:
+                wiki = None
+            if wiki and wiki.image_url:
+                tmdb_row.poster_url = wiki.image_url
+                tmdb_row.backdrop_url = tmdb_row.backdrop_url or wiki.image_url
+                db.flush()
+        return tmdb_row
+
+    existing = db.scalar(
+        select(ContentTitle)
+        .where(func.lower(ContentTitle.title) == title_name.lower(), ContentTitle.content_type == content_type)
+        .order_by(ContentTitle.updated_at.desc())
+    )
     if existing is not None:
-        # Force seeded titles onto local media so stale/remote/broken links never leak into the demo feed.
-        existing.poster_url = fallback_poster
-        existing.backdrop_url = fallback_poster
+        if not _is_external_image_url(existing.poster_url):
+            try:
+                wiki = resolve_wikipedia_metadata(
+                    title=existing.title or title_name,
+                    release_date=existing.release_date,
+                    content_type=existing.content_type,
+                )
+            except Exception:
+                wiki = None
+            if wiki and wiki.image_url:
+                existing.poster_url = wiki.image_url
+                existing.backdrop_url = existing.backdrop_url or wiki.image_url
+            else:
+                existing.poster_url = existing.poster_url or fallback_poster
+                existing.backdrop_url = existing.backdrop_url or existing.poster_url
+            db.flush()
         return existing
 
     tmdb_id = _stable_tmdb_id(title_name)
     while db.scalar(select(ContentTitle).where(ContentTitle.tmdb_id == tmdb_id)) is not None:
         tmdb_id += 1
-
     title = ContentTitle(
         tmdb_id=tmdb_id,
-        content_type=_infer_content_type(title_name),
+        content_type=content_type,
         title=title_name,
         original_title=title_name,
         overview=title_name,
@@ -279,6 +419,179 @@ def _add_comments(db: Session, event: FeedEvent, comments: list[str], commenters
         db.add(FeedComment(event_id=event.id, user_id=commenter.id, body=body))
 
 
+def _seed_watchlists(
+    db: Session,
+    *,
+    current_user: User,
+    titles_by_name: dict[str, ContentTitle],
+) -> None:
+    watchlists = ensure_default_watchlists(db, current_user.id)
+    by_name = {watchlist.name: watchlist for watchlist in watchlists}
+    watchlist_ids = [watchlist.id for watchlist in watchlists]
+    if watchlist_ids:
+        db.execute(delete(WatchlistItem).where(WatchlistItem.watchlist_id.in_(watchlist_ids)))
+
+    for list_name, title_names in WATCHLIST_SEED.items():
+        watchlist = by_name.get(list_name)
+        if watchlist is None:
+            continue
+        for idx, title_name in enumerate(title_names):
+            title = titles_by_name.get(title_name)
+            if title is None:
+                continue
+            db.add(
+                WatchlistItem(
+                    watchlist_id=watchlist.id,
+                    content_title_id=title.id,
+                    added_via="demo_seed",
+                    position=idx + 1,
+                )
+            )
+
+
+def _delete_seeded_teams(db: Session) -> None:
+    seeded_slugs = [row["slug"] for row in WATCH_TEAM_SEED]
+    seeded_teams = db.scalars(select(Team).where(Team.slug.in_(seeded_slugs))).all()
+    if not seeded_teams:
+        return
+
+    team_ids = [team.id for team in seeded_teams]
+    team_event_ids = db.scalars(select(FeedEvent.id).where(FeedEvent.team_id.in_(team_ids))).all()
+    if team_event_ids:
+        db.execute(delete(FeedReaction).where(FeedReaction.event_id.in_(team_event_ids)))
+        db.execute(delete(FeedComment).where(FeedComment.event_id.in_(team_event_ids)))
+    db.execute(delete(FeedEvent).where(FeedEvent.team_id.in_(team_ids)))
+    db.execute(delete(TeamActivity).where(TeamActivity.team_id.in_(team_ids)))
+    db.execute(delete(TeamRanking).where(TeamRanking.team_id.in_(team_ids)))
+    db.execute(delete(TeamTitle).where(TeamTitle.team_id.in_(team_ids)))
+    db.execute(delete(TeamMember).where(TeamMember.team_id.in_(team_ids)))
+    db.execute(delete(Team).where(Team.id.in_(team_ids)))
+
+
+def _seed_watch_teams(
+    db: Session,
+    *,
+    users_by_code: dict[str, User],
+    titles_by_name: dict[str, ContentTitle],
+    commenter_pool: list[User],
+    reactor_pool: list[User],
+    now: datetime,
+) -> None:
+    _delete_seeded_teams(db)
+
+    for team_idx, team_seed in enumerate(WATCH_TEAM_SEED):
+        owner = users_by_code[team_seed["members"][0]]
+        team = Team(
+            name=team_seed["name"],
+            slug=team_seed["slug"],
+            description=team_seed["description"],
+            visibility="private",
+            icon=team_seed["icon"],
+            owner_user_id=owner.id,
+            invite_code=team_seed["invite_code"],
+            max_members=max(8, len(team_seed["members"]) + 2),
+            last_activity_at=now - timedelta(hours=team_idx),
+        )
+        db.add(team)
+        db.flush()
+
+        for member_idx, member_code in enumerate(team_seed["members"]):
+            db.add(
+                TeamMember(
+                    team_id=team.id,
+                    user_id=users_by_code[member_code].id,
+                    role="owner" if member_idx == 0 else "member",
+                    status="active",
+                )
+            )
+
+        db.add(
+            TeamActivity(
+                team_id=team.id,
+                actor_user_id=owner.id,
+                activity_type="team_created",
+                entity_id=team.id,
+                payload={"team_name": team.name, "seed_tag": SEED_TAG},
+                created_at=now - timedelta(days=6 - team_idx),
+            )
+        )
+
+        for title_seed in team_seed["titles"]:
+            title = titles_by_name.get(title_seed["title"])
+            if title is None:
+                continue
+            actor = users_by_code[title_seed["added_by"]]
+            team_title = TeamTitle(
+                team_id=team.id,
+                content_title_id=title.id,
+                added_by_user_id=actor.id,
+                note=title_seed["note"],
+                added_at=now - timedelta(days=5 - team_idx, hours=title_seed["rank"]),
+            )
+            db.add(team_title)
+            db.flush()
+            db.add(
+                TeamRanking(
+                    team_id=team.id,
+                    content_title_id=title.id,
+                    rank=title_seed["rank"],
+                    score=title_seed["score"],
+                    movement=title_seed["movement"],
+                    weeks_on_list=title_seed["weeks_on_list"],
+                )
+            )
+            db.add(
+                TeamActivity(
+                    team_id=team.id,
+                    actor_user_id=actor.id,
+                    activity_type="title_added",
+                    content_title_id=title.id,
+                    entity_id=team_title.id,
+                    payload={"title_name": title.title, "note": title_seed["note"], "seed_tag": SEED_TAG},
+                    created_at=now - timedelta(days=4 - team_idx, hours=title_seed["rank"]),
+                )
+            )
+
+        for post_idx, post_seed in enumerate(team_seed["posts"]):
+            actor = users_by_code[post_seed["author"]]
+            title = titles_by_name.get(post_seed.get("title", ""))
+            event = create_feed_event(
+                db,
+                actor_user_id=actor.id,
+                team_id=team.id,
+                content_title_id=title.id if title else None,
+                event_type="team_post",
+                source_type="demo_seed_team",
+                payload={
+                    "seed_tag": SEED_TAG,
+                    "segment": "watch-teams",
+                    "body": post_seed["caption"],
+                    "caption": post_seed["caption"],
+                    "title_name": title.title if title else None,
+                    "action_label": "posted to the watch team",
+                    "team_name": team.name,
+                    "likes": post_seed["likes"],
+                    "comment_count": len(post_seed["comments"]),
+                    "shares": max(1, int(post_seed["likes"]) // 35),
+                },
+            )
+            event.created_at = now - timedelta(hours=team_idx * 9 + post_idx * 3 + 1)
+            _add_reactions(db, event, _reaction_counts_from_likes(int(post_seed["likes"])), reactor_pool)
+            _add_comments(db, event, post_seed["comments"], commenter_pool)
+            db.add(
+                TeamActivity(
+                    team_id=team.id,
+                    actor_user_id=actor.id,
+                    activity_type="team_post",
+                    content_title_id=title.id if title else None,
+                    entity_id=event.id,
+                    payload={"text": post_seed["caption"], "title_name": title.title if title else None, "seed_tag": SEED_TAG},
+                    created_at=event.created_at,
+                )
+            )
+        team.last_activity_at = now - timedelta(hours=team_idx)
+
+
 def seed_demo_feed() -> None:
     db = SessionLocal()
     try:
@@ -293,7 +606,7 @@ def seed_demo_feed() -> None:
         avatar_map = _avatar_assignments()
         for entry in DEMO_USERS:
             hydrated_entry = dict(entry)
-            if hydrated_entry["code"] != "platform_trending":
+            if hydrated_entry["code"] not in SCENESNAP_ACCOUNT_CODES:
                 hydrated_entry["avatar"] = avatar_map.get(hydrated_entry["code"], hydrated_entry["avatar"])
             users_by_code[entry["code"]] = _upsert_user(db, hydrated_entry)
 
@@ -311,10 +624,19 @@ def seed_demo_feed() -> None:
         reactor_pool = commenter_pool + [users_by_code["u_demo"], users_by_code["platform_trending"], users_by_code["industry_news"]]
 
         now = datetime.now(UTC)
+        _seed_watchlists(db, current_user=current_user, titles_by_name=titles_by_name)
+        _seed_watch_teams(
+            db,
+            users_by_code=users_by_code,
+            titles_by_name=titles_by_name,
+            commenter_pool=commenter_pool,
+            reactor_pool=reactor_pool,
+            now=now,
+        )
         all_posts = [("for_you", row) for row in FOR_YOU_POSTS] + [("discover", row) for row in DISCOVER_POSTS]
 
         for idx, (segment, row) in enumerate(all_posts):
-            author_code = "platform_trending" if segment == "discover" else row["author"]
+            author_code = row["author"]
             author = users_by_code[author_code]
             title = titles_by_name.get(row.get("title"))
             likes = int(row.get("likes", 0))

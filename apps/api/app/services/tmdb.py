@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+from urllib.parse import quote
 from typing import Any
 
 import httpx
@@ -12,6 +13,56 @@ from app.core.config import settings
 from app.models.content import ContentAvailability, ContentTitle
 
 TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500"
+TMDB_BACKDROP_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w780"
+SUPPORTED_PROVIDER_ALIASES = {
+    "netflix": ("netflix", "Netflix"),
+    "amazon prime video": ("prime_video", "Prime Video"),
+    "prime video": ("prime_video", "Prime Video"),
+    "apple tv plus": ("apple_tv_plus", "Apple TV+"),
+    "appletv+": ("apple_tv_plus", "Apple TV+"),
+    "apple tv+": ("apple_tv_plus", "Apple TV+"),
+    "max": ("hbo_max", "HBO Max"),
+    "hbo max": ("hbo_max", "HBO Max"),
+    "disney plus": ("disney_plus", "Disney+"),
+    "hulu": ("hulu", "Hulu"),
+    "paramount plus": ("paramount_plus", "Paramount+"),
+    "peacock premium": ("peacock", "Peacock"),
+    "peacock": ("peacock", "Peacock"),
+}
+PROVIDER_LINK_TEMPLATES = {
+    "netflix": {
+        "app_url": None,
+        "web_url": "https://www.netflix.com/search?q={query}",
+    },
+    "prime_video": {
+        "app_url": None,
+        "web_url": "https://www.amazon.com/s?k={query}&i=instant-video",
+    },
+    "apple_tv_plus": {
+        "app_url": None,
+        "web_url": "https://tv.apple.com/search?term={query}",
+    },
+    "hbo_max": {
+        "app_url": None,
+        "web_url": "https://play.max.com/search?q={query}",
+    },
+    "disney_plus": {
+        "app_url": None,
+        "web_url": "https://www.disneyplus.com/search?q={query}",
+    },
+    "hulu": {
+        "app_url": None,
+        "web_url": "https://www.hulu.com/search?q={query}",
+    },
+    "paramount_plus": {
+        "app_url": None,
+        "web_url": "https://www.paramountplus.com/search/?query={query}",
+    },
+    "peacock": {
+        "app_url": None,
+        "web_url": "https://www.peacocktv.com/search?q={query}",
+    },
+}
 
 
 class TmdbConfigurationError(Exception):
@@ -42,12 +93,30 @@ def _poster_url(path: str | None) -> str | None:
     return f"{TMDB_IMAGE_BASE_URL}{path}"
 
 
+def _backdrop_url(path: str | None) -> str | None:
+    if not path:
+        return None
+    return f"{TMDB_BACKDROP_IMAGE_BASE_URL}{path}"
+
+
 def _normalize_type(media_type: str | None) -> str | None:
     if media_type == "movie":
         return "movie"
     if media_type in {"tv", "series"}:
         return "series"
     return None
+
+
+def build_provider_destination(service_id: str, title_name: str) -> tuple[str | None, str | None]:
+    template = PROVIDER_LINK_TEMPLATES.get(service_id)
+    if template is None:
+        return None, None
+    query = quote(title_name.strip())
+    app_template = template.get("app_url")
+    web_template = template.get("web_url")
+    app_url = app_template.format(query=query) if isinstance(app_template, str) and app_template else None
+    web_url = web_template.format(query=query) if isinstance(web_template, str) and web_template else None
+    return app_url, web_url
 
 
 def _upsert_title_from_tmdb_result(db: Session, item: dict[str, Any]) -> ContentTitle | None:
@@ -65,7 +134,7 @@ def _upsert_title_from_tmdb_result(db: Session, item: dict[str, Any]) -> Content
             original_title=item.get("original_title") or item.get("original_name"),
             overview=item.get("overview"),
             poster_url=_poster_url(item.get("poster_path")),
-            backdrop_url=_poster_url(item.get("backdrop_path")),
+            backdrop_url=_backdrop_url(item.get("backdrop_path")),
             release_date=_parse_date(item.get("release_date") or item.get("first_air_date")),
             tmdb_vote_average=Decimal(str(round(item.get("vote_average") or 0, 1))),
             genres=[
@@ -84,7 +153,7 @@ def _upsert_title_from_tmdb_result(db: Session, item: dict[str, Any]) -> Content
     title.original_title = item.get("original_title") or item.get("original_name")
     title.overview = item.get("overview")
     title.poster_url = _poster_url(item.get("poster_path"))
-    title.backdrop_url = _poster_url(item.get("backdrop_path"))
+    title.backdrop_url = _backdrop_url(item.get("backdrop_path"))
     title.release_date = _parse_date(item.get("release_date") or item.get("first_air_date"))
     title.tmdb_vote_average = Decimal(str(round(item.get("vote_average") or 0, 1)))
     title.genres = [
@@ -136,9 +205,7 @@ def refresh_streaming_options(db: Session, title: ContentTitle) -> list[ContentA
         response.raise_for_status()
 
     us_results = response.json().get("results", {}).get("US", {})
-    provider_groups = []
-    for key in ("flatrate", "rent", "buy", "ads", "free"):
-        provider_groups.extend(us_results.get(key, []))
+    provider_groups = list(us_results.get("flatrate", []))
 
     existing = db.scalars(select(ContentAvailability).where(ContentAvailability.content_title_id == title.id)).all()
     for availability in existing:
@@ -148,17 +215,22 @@ def refresh_streaming_options(db: Session, title: ContentTitle) -> list[ContentA
     created: list[ContentAvailability] = []
     seen_codes: set[str] = set()
     for provider in provider_groups:
-        provider_code = str(provider.get("provider_id"))
+        provider_name = provider.get("provider_name") or "Unknown"
+        normalized = SUPPORTED_PROVIDER_ALIASES.get(str(provider_name).strip().lower())
+        if normalized is None:
+            continue
+        provider_code, canonical_name = normalized
         if provider_code in seen_codes:
             continue
         seen_codes.add(provider_code)
+        app_url, web_url = build_provider_destination(provider_code, title.title)
         availability = ContentAvailability(
             content_title_id=title.id,
             provider_code=provider_code,
-            provider_name=provider.get("provider_name") or "Unknown",
+            provider_name=canonical_name,
             region_code="US",
-            web_url=us_results.get("link"),
-            deeplink_url=us_results.get("link"),
+            web_url=web_url,
+            deeplink_url=app_url,
             is_connected_priority=False,
         )
         db.add(availability)
@@ -166,6 +238,51 @@ def refresh_streaming_options(db: Session, title: ContentTitle) -> list[ContentA
 
     db.commit()
     return created
+
+
+def fetch_title_gallery(title: ContentTitle, limit: int = 12) -> list[dict[str, Any]]:
+    endpoint = f"/movie/{title.tmdb_id}/images" if title.content_type == "movie" else f"/tv/{title.tmdb_id}/images"
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+        response = client.get(endpoint)
+        response.raise_for_status()
+
+    data = response.json()
+    gallery: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+
+    for item in data.get("backdrops", []):
+        url = _backdrop_url(item.get("file_path"))
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        gallery.append(
+            {
+                "url": url,
+                "kind": "backdrop",
+                "width": item.get("width"),
+                "height": item.get("height"),
+            }
+        )
+        if len(gallery) >= limit:
+            return gallery
+
+    for item in data.get("posters", []):
+        url = _poster_url(item.get("file_path"))
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        gallery.append(
+            {
+                "url": url,
+                "kind": "poster",
+                "width": item.get("width"),
+                "height": item.get("height"),
+            }
+        )
+        if len(gallery) >= limit:
+            return gallery
+
+    return gallery
 
 
 def fetch_related_titles(db: Session, title: ContentTitle, limit: int = 10) -> list[ContentTitle]:
